@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(where platformio *)",
+      "Bash(where pio *)",
+      "Bash(python -m platformio --version)",
+      "Bash(C:/Users/zouyuhao/.platformio/penv/Scripts/pio.exe run *)"
+    ]
+  }
+}
