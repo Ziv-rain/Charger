@@ -8,7 +8,7 @@ void updateOLED() {
     u8g2.setCursor(0, 10);
     u8g2.print(sd_card_ok ? "SD" : "--");
     u8g2.setCursor(30, 10);
-    u8g2.print(bt_connected ? "BT" : "--");
+    u8g2.print(bleDeviceConnected ? "BLE" : "--");
     u8g2.setCursor(78, 10);
     if (bq27220_ok && batteryRemainCap >= 0) {
         u8g2.print(String(batteryRemainCap) + "mAh");

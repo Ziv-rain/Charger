@@ -1,6 +1,7 @@
 #include "main.h"
 #include "display.h"
 #include "sdcard.h"
+#include "ble_comm.h"
 
 // ================= 全局对象定义 =================
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -17,7 +18,6 @@ int dischargeGear = 1;
 // ================= 外设状态 =================
 bool bq27220_ok = false;
 bool sd_card_ok = false;
-bool bt_connected = false;
 
 // ================= 电池数据缓存 =================
 int batterySOC = -1;
@@ -66,14 +66,16 @@ void applyPowerControl() {
     if (chargeOn) {
         digitalWrite(PIN_CHARGE_EN, LOW);
         digitalWrite(PIN_DISCHARGE_EN, LOW);
+        delay(10);
         digitalWrite(PIN_CHARGE_CURRENT, (chargeGear == 2) ? HIGH : LOW);
-        delayMicroseconds(500);
+        delay(5);
         digitalWrite(PIN_CHARGE_EN, HIGH);
     } else if (dischargeOn) {
         digitalWrite(PIN_DISCHARGE_EN, LOW);
         digitalWrite(PIN_CHARGE_EN, LOW);
+        delay(10);
         digitalWrite(PIN_DISCHARGE_CURRENT, (dischargeGear == 2) ? HIGH : LOW);
-        delayMicroseconds(500);
+        delay(5);
         digitalWrite(PIN_DISCHARGE_EN, HIGH);
     } else {
         digitalWrite(PIN_CHARGE_EN, LOW);
@@ -219,14 +221,12 @@ void setup() {
         }
 
         fuelGauge.writeDataMemoryU16(0x929F, 1500);
-        fuelGauge.writeDataMemoryU16(0x929D, 1500);
+        fuelGauge.writeDataMemoryU16(0x929D, 5500);
 
         fuelGauge.endConfigUpdate(true);
-        for (int i = 0; i < 50; i++) {
-            uint16_t opStatus;
-            if (fuelGauge.readWord(0x3A, opStatus) && !(opStatus & 0x04)) break;
-            delay(10);
-        }
+        fuelGauge.setDesignCapacity(1500);
+        fuelGauge.reset();
+        delay(1000);
 
         fuelGauge.seal();
         Serial.println("BQ27220 容量已配置: DesignCap=FCC=1500mAh");
@@ -251,6 +251,9 @@ void setup() {
 
     lastDisplayUpdate = millis();
     updateOLED();
+
+    initBLE();
+
     Serial.println("初始化完成！");
 }
 
@@ -260,9 +263,19 @@ void loop() {
     button1.tick();
     button2.tick();
 
+    blePollCommand();
+
     if (now - lastSensorRead >= 1000) {
         lastSensorRead = now;
         readBatteryData();
+    }
+
+    {
+        static unsigned long lastBLEReport = 0;
+        if (bleDeviceConnected && now - lastBLEReport >= 2000) {
+            lastBLEReport = now;
+            bleUpdateAndNotify();
+        }
     }
 
     if (now - lastDisplayUpdate >= 500) {

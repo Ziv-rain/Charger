@@ -60,7 +60,9 @@ extern int dischargeGear;
 // ================= 外设状态 =================
 extern bool bq27220_ok;
 extern bool sd_card_ok;
-extern bool bt_connected;
+extern bool bleDeviceConnected;
+extern uint16_t bleChargeCutoff;
+extern uint16_t bleDischargeCutoff;
 
 // ================= 电池数据缓存 =================
 extern int batterySOC;
@@ -105,3 +107,9 @@ void clickKey1();
 void longPressKey1();
 void clickKey2();
 void longPressKey2();
+
+// BLE 通信
+void initBLE();
+bool bleIsConnected();
+void blePollCommand();
+void bleUpdateAndNotify();
