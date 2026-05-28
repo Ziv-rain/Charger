@@ -102,6 +102,12 @@ extern char logFilename[32];
 // ================= 事件标记 =================
 extern uint8_t lastEvent;
 
+// ================= 自定义SOC计算 =================
+#define DESIGN_CAPACITY_MAH 1500
+extern int customSOC;
+extern float remainingCapacityMah;
+extern unsigned long lastSocCalcTime;
+
 // ================= 函数声明 =================
 void applyPowerControl();
 void readBatteryData();

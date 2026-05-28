@@ -52,6 +52,11 @@ char logFilename[32] = "/charger.csv";
 // ================= 事件标记 =================
 uint8_t lastEvent = EVENT_NONE;
 
+// ================= 自定义SOC计算 =================
+int customSOC = -1;
+float remainingCapacityMah = DESIGN_CAPACITY_MAH;
+unsigned long lastSocCalcTime = 0;
+
 // ================= 充放电硬件控制 (互锁) =================
 void applyPowerControl() {
     bool chargeOn = (currentState == STATE_CHARGE_RUN);
@@ -83,15 +88,104 @@ void applyPowerControl() {
     }
 }
 
+// ================= 电压转SOC查表 =================
+int voltageToSOC(int mv) {
+    // 1500mAh锂电池电压-SOC对应关系
+    if (mv >= 4200) return 100;
+    if (mv >= 4000) return 85 + (mv - 4000) * 15 / 200;
+    if (mv >= 3800) return 60 + (mv - 3800) * 25 / 200;
+    if (mv >= 3700) return 50 + (mv - 3700) * 10 / 100;
+    if (mv >= 3600) return 35 + (mv - 3600) * 15 / 100;
+    if (mv >= 3500) return 20 + (mv - 3500) * 15 / 100;
+    if (mv >= 3400) return 10 + (mv - 3400) * 10 / 100;
+    if (mv >= 3300) return 5 + (mv - 3300) * 5 / 100;
+    if (mv >= 3000) return (mv - 3000) * 5 / 300;
+    return 0;
+}
+
+// ================= 自定义SOC计算 =================
+void calculateCustomSOC() {
+    unsigned long now = millis();
+
+    // 首次读取：从BQ27220初始化
+    if (lastSocCalcTime == 0) {
+        int bq27220_soc = fuelGauge.readStateOfChargePercent();
+        if (bq27220_soc >= 0) {
+            customSOC = bq27220_soc;
+            remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
+            Serial.printf("SOC初始化: BQ27220_SOC=%d%%, RM=%dmAh\n",
+                          bq27220_soc, remainingCapacityMah);
+        } else {
+            customSOC = voltageToSOC(batteryVoltage);
+            remainingCapacityMah = (DESIGN_CAPACITY_MAH * customSOC) / 100;
+            Serial.printf("SOC初始化: BQ27220失败, 电压法=%d%%\n", customSOC);
+        }
+        lastSocCalcTime = now;
+        return;
+    }
+
+    // 非运行状态：用BQ27220的SOC校准（无电流流动，BQ27220是准的）
+    if (currentState == STATE_STOP || currentState == STATE_CHARGE_PAUSE || currentState == STATE_DISCHARGE_PAUSE) {
+        int bq27220_soc = fuelGauge.readStateOfChargePercent();
+        if (bq27220_soc >= 0) {
+            customSOC = bq27220_soc;
+            remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
+        } else {
+            customSOC = voltageToSOC(batteryVoltage);
+            remainingCapacityMah = (DESIGN_CAPACITY_MAH * customSOC) / 100;
+        }
+        lastSocCalcTime = now;
+    } else {
+        // 充放电状态：库仑计数（BQ27220此时不准，不用它）
+        float dt_hours = (now - lastSocCalcTime) / 3600000.0f;
+        float delta_mah = batteryCurrent * dt_hours;
+        remainingCapacityMah += delta_mah;
+        lastSocCalcTime = now;
+
+        if (remainingCapacityMah > DESIGN_CAPACITY_MAH)
+            remainingCapacityMah = DESIGN_CAPACITY_MAH;
+        if (remainingCapacityMah < 0)
+            remainingCapacityMah = 0;
+
+        customSOC = (remainingCapacityMah * 100) / DESIGN_CAPACITY_MAH;
+    }
+
+    if (customSOC > 100) customSOC = 100;
+    if (customSOC < 0) customSOC = 0;
+
+    batterySOC = customSOC;
+    batteryRemainCap = remainingCapacityMah;
+    batteryFullCap = DESIGN_CAPACITY_MAH;
+    batteryDesignCap = DESIGN_CAPACITY_MAH;
+
+    static float prevRM = -1;
+    float rmDelta = (prevRM >= 0) ? (remainingCapacityMah - prevRM) : 0;
+    float socDeltaFloat = rmDelta * 100.0f / DESIGN_CAPACITY_MAH;
+    prevRM = remainingCapacityMah;
+
+    // 计算自定义预计剩余时间（分钟）
+    int etaMin = -1;
+    if (currentState == STATE_DISCHARGE_RUN && batteryCurrent < 0) {
+        etaMin = (int)(remainingCapacityMah / (-batteryCurrent) * 60);
+    } else if (currentState == STATE_CHARGE_RUN && batteryCurrent > 0) {
+        etaMin = (int)((DESIGN_CAPACITY_MAH - remainingCapacityMah) / batteryCurrent * 60);
+    }
+
+    Serial.printf("[SOC] V=%dmV I=%dmA RM=%.1fmAh SOC=%d%% dSOC=%+.3f%% "
+                  "ETA自定义=%dm BQ_TTE=%dm BQ_TTF=%dm state=%d\n",
+                  batteryVoltage, batteryCurrent, remainingCapacityMah,
+                  customSOC, socDeltaFloat, etaMin, batteryTTE, batteryTTF,
+                  currentState);
+}
+
 // ================= BQ27220 传感器读取 =================
 void readBatteryData() {
     if (!bq27220_ok) return;
 
-    int soc = fuelGauge.readStateOfChargePercent();
     int mv  = fuelGauge.readVoltageMillivolts();
     int ma  = fuelGauge.readCurrentMilliamps();
 
-    if (soc < 0 || mv < 0) {
+    if (mv < 0) {
         bqFailCount++;
         if (bqFailCount > 3) {
             bq27220_ok = false;
@@ -100,7 +194,6 @@ void readBatteryData() {
         return;
     }
     bqFailCount = 0;
-    batterySOC = soc;
     batteryVoltage = mv;
     batteryCurrent = ma;
 
@@ -111,10 +204,10 @@ void readBatteryData() {
     int avgMa = fuelGauge.readAverageCurrentMilliamps();
     batteryAvgCurrent = (avgMa == INT16_MIN) ? 0 : avgMa;
 
-    batteryRemainCap = fuelGauge.readRemainingCapacitymAh();
-    batteryFullCap   = fuelGauge.readFullChargeCapacitymAh();
-    batteryDesignCap = fuelGauge.readDesignCapacitymAh();
+    // 使用自定义SOC计算
+    calculateCustomSOC();
 
+    // 其他数据仍从BQ27220读取
     batteryCycleCount = fuelGauge.readCycleCount();
     batterySOH = fuelGauge.readStateOfHealthPercent();
 
@@ -123,6 +216,29 @@ void readBatteryData() {
 
     fuelGauge.readBatteryStatus(batteryStatus);
     fuelGauge.readOperationStatus(operationStatus);
+}
+
+// ================= 自动截止检测 =================
+void checkAutoCutoff() {
+    if (currentState == STATE_CHARGE_RUN) {
+        if (batteryVoltage >= bleChargeCutoff) {
+            currentState = STATE_STOP;
+            lastEvent = EVENT_AUTO_CUTOFF_FULL;
+            applyPowerControl();
+            if (sd_card_ok) logToSDCard();
+            updateOLED();
+            Serial.printf("自动截止：充满 %dmV >= %dmV\n", batteryVoltage, bleChargeCutoff);
+        }
+    } else if (currentState == STATE_DISCHARGE_RUN) {
+        if (batteryVoltage <= bleDischargeCutoff) {
+            currentState = STATE_STOP;
+            lastEvent = EVENT_AUTO_CUTOFF_EMPTY;
+            applyPowerControl();
+            if (sd_card_ok) logToSDCard();
+            updateOLED();
+            Serial.printf("自动截止：放空 %dmV <= %dmV\n", batteryVoltage, bleDischargeCutoff);
+        }
+    }
 }
 
 // ================= 按键事件回调 =================
@@ -296,6 +412,7 @@ void loop() {
     if (now - lastSensorRead >= 1000) {
         lastSensorRead = now;
         readBatteryData();
+        checkAutoCutoff();
     }
 
     {

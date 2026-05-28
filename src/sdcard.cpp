@@ -24,8 +24,9 @@ bool initSDCard() {
 
     File logFile = SD.open(logFilename, FILE_WRITE);
     if (logFile) {
-        logFile.println("timestamp_ms,state_id,gear_id,"
-                        "SOC_pct,voltage_mV,current_mA,avg_current_mA,"
+        logFile.println("timestamp_ms,state_id,mode_id,gear_id,"
+                        "SOC_pct,custom_SOC_pct,custom_RM_mAh,"
+                        "voltage_mV,current_mA,avg_current_mA,"
                         "temperature_C,remain_cap_mAh,full_cap_mAh,design_cap_mAh,"
                         "cycle_count_n,SOH_pct,tte_min,ttf_min,"
                         "batt_status_hex,op_status_hex,event_id");
@@ -57,10 +58,16 @@ void logToSDCard() {
     logFile.print(",");
     logFile.print(currentState);
     logFile.print(",");
+    logFile.print(currentMode);
+    logFile.print(",");
     logFile.print((currentMode == MODE_CHARGE) ? chargeGear : dischargeGear);
     logFile.print(",");
     if (bq27220_ok) {
         logFile.print(batterySOC);
+        logFile.print(",");
+        logFile.print(customSOC);
+        logFile.print(",");
+        logFile.print(remainingCapacityMah, 1);
         logFile.print(",");
         logFile.print(batteryVoltage);
         logFile.print(",");
@@ -94,8 +101,10 @@ void logToSDCard() {
         logFile.print(",");
         logFile.print(currentState);
         logFile.print(",");
+        logFile.print(currentMode);
+        logFile.print(",");
         logFile.print((currentMode == MODE_CHARGE) ? chargeGear : dischargeGear);
-        logFile.println(",-1,-1,-1,-1,NAN,-1,-1,-1,-1,-1,-1,-1,0x0000,0x0000," + String(lastEvent));
+        logFile.println(",-1,-1,-1,-1,-1,-1,NAN,-1,-1,-1,-1,-1,-1,-1,0x0000,0x0000," + String(lastEvent));
     }
     lastEvent = EVENT_NONE;
     logFile.flush();  // 显式刷新，防止断电数据丢失
