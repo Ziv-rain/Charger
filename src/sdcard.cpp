@@ -90,8 +90,14 @@ void logToSDCard() {
         logFile.print(",");
         logFile.println(lastEvent);
     } else {
-        logFile.println("-1,-1,-1,-1,NAN,-1,-1,-1,-1,-1,-1,-1,0x0000,0x0000," + String(lastEvent));
+        logFile.print(millis());
+        logFile.print(",");
+        logFile.print(currentState);
+        logFile.print(",");
+        logFile.print((currentMode == MODE_CHARGE) ? chargeGear : dischargeGear);
+        logFile.println(",-1,-1,-1,-1,NAN,-1,-1,-1,-1,-1,-1,-1,0x0000,0x0000," + String(lastEvent));
     }
     lastEvent = EVENT_NONE;
+    logFile.flush();  // 显式刷新，防止断电数据丢失
     logFile.close();
 }

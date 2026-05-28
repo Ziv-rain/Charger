@@ -22,6 +22,9 @@ const int PIN_SD_CLK = 14;
 const int PIN_SD_CS = 15;
 const int PIN_SD_DET = 18;
 
+const int PIN_I2C_SDA = 21;
+const int PIN_I2C_SCL = 22;
+
 // ================= 全局对象 =================
 extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 extern OneButton button1;
@@ -50,6 +53,8 @@ enum WorkMode {
 #define EVENT_MANUAL_MODE        4
 #define EVENT_AUTO_CUTOFF_FULL   5
 #define EVENT_AUTO_CUTOFF_EMPTY  6
+#define EVENT_MANUAL_RESUME      7
+#define EVENT_MANUAL_PAUSE       8
 
 // ================= 全局状态变量 =================
 extern SystemState currentState;

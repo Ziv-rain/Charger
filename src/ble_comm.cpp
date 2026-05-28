@@ -25,6 +25,7 @@ uint16_t bleDischargeCutoff = 3000;
 // ================= 指令缓存（BLE回调只写，主loop读） =================
 static volatile uint8_t  bleCmd = 0;
 static volatile uint8_t  bleCmdData[2] = {0, 0};
+static portMUX_TYPE bleMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ================= Status 字节编码 =================
 static uint8_t encodeStatus() {
@@ -103,6 +104,12 @@ class SrvCallback : public BLEServerCallbacks {
     }
     void onDisconnect(BLEServer *pServer) {
         bleDeviceConnected = false;
+        // 清空未处理的指令，防止重连后执行旧命令
+        portENTER_CRITICAL(&bleMux);
+        bleCmd = 0;
+        bleCmdData[0] = 0;
+        bleCmdData[1] = 0;
+        portEXIT_CRITICAL(&bleMux);
         Serial.println("BLE: 客户端已断开");
         pServer->getAdvertising()->start();
     }
@@ -170,12 +177,15 @@ bool bleIsConnected() {
 
 // ================= 主循环轮询：处理手机下发指令 =================
 void blePollCommand() {
+    // 使用临界区保护多变量读取的原子性（修复BLE竞态条件）
+    portENTER_CRITICAL(&bleMux);
     uint8_t cmd = bleCmd;
-    if (cmd == 0) return;
-    bleCmd = 0;
-
     uint8_t d0 = bleCmdData[0];
     uint8_t d1 = bleCmdData[1];
+    bleCmd = 0;
+    portEXIT_CRITICAL(&bleMux);
+
+    if (cmd == 0) return;
 
     switch (cmd) {
     case 0x02:  // 充/放模式
