@@ -60,6 +60,18 @@ unsigned long bq27220RunTime = 0;
 bool bq27220NeedReset = false;
 unsigned long lastStateChangeTime = 0;
 
+// ================= 库仑计数优化 =================
+float currentFilterBuf[CURRENT_FILTER_SIZE] = {0};
+int currentFilterIdx = 0;
+float coulombGain = COULOMB_GAIN_INIT;  // 动态增益系数
+
+// ================= 自动校准 =================
+unsigned long lastAutoCalibrateTime = 0;
+bool autoCalibrating = false;
+bool fastCalibrateMode = false;
+int lastBq27220Soc = -1;
+int socDeviationCount = 0;
+
 // ================= 循环与能量统计 =================
 int cycleNumber = 0;
 int phaseType = 0;           // 0=休息, 1=充电, 2=放电
@@ -164,6 +176,7 @@ int voltageToSOC(int mv) {
 
 // ================= 自定义SOC计算 =================
 void calculateCustomSOC() {
+    if (autoCalibrating) return;  // 校准期间跳过
     unsigned long now = millis();
     static SystemState lastState = STATE_STOP;
 
@@ -246,7 +259,9 @@ void calculateCustomSOC() {
     } else {
         // 充放电状态：库仑计数（BQ27220此时不准，不用它）
         float dt_hours = (now - lastSocCalcTime) / 3600000.0f;
-        float delta_mah = batteryCurrent * dt_hours;
+        // 使用平均电流计算，增益系数让SOC变化更慢
+        float calcCurrent = (batteryAvgCurrent != 0) ? batteryAvgCurrent : batteryCurrent;
+        float delta_mah = calcCurrent * dt_hours * coulombGain;
         remainingCapacityMah += delta_mah;
         lastSocCalcTime = now;
 
@@ -286,9 +301,144 @@ void calculateCustomSOC() {
                   currentState);
 }
 
+// ================= 电流滤波 =================
+float filterCurrent(float raw) {
+    currentFilterBuf[currentFilterIdx] = raw;
+    currentFilterIdx = (currentFilterIdx + 1) % CURRENT_FILTER_SIZE;
+
+    float sum = 0;
+    for (int i = 0; i < CURRENT_FILTER_SIZE; i++) {
+        sum += currentFilterBuf[i];
+    }
+    return sum / CURRENT_FILTER_SIZE;
+}
+
+// ================= 自动校准 =================
+void checkAutoCalibrate() {
+    unsigned long now = millis();
+
+    // 仅在充放电运行状态触发
+    if (currentState != STATE_CHARGE_RUN && currentState != STATE_DISCHARGE_RUN) {
+        lastAutoCalibrateTime = now;
+        fastCalibrateMode = false;
+        socDeviationCount = 0;
+        return;
+    }
+
+    // 判断是否在充放电末尾，使用更短的校准间隔
+    bool isNearEnd = false;
+    if (currentState == STATE_CHARGE_RUN && (customSOC > 90 || batteryVoltage > 4100)) {
+        isNearEnd = true;
+    } else if (currentState == STATE_DISCHARGE_RUN && (customSOC < 20 || batteryVoltage < 3400)) {
+        isNearEnd = true;
+    }
+
+    // 确定校准间隔
+    unsigned long calibrateInterval;
+    if (fastCalibrateMode) {
+        calibrateInterval = AUTO_CALIBRATE_FAST_INTERVAL;  // 3分钟
+    } else if (isNearEnd) {
+        calibrateInterval = AUTO_CALIBRATE_FAST_INTERVAL;  // 3分钟（末尾）
+    } else {
+        calibrateInterval = AUTO_CALIBRATE_INTERVAL;       // 15分钟
+    }
+
+    // 检查是否到达校准间隔
+    if (now - lastAutoCalibrateTime < calibrateInterval) return;
+
+    Serial.println("自动校准: 开始...");
+    autoCalibrating = true;
+
+    // 1. 暂停充放电
+    SystemState prevState = currentState;
+    currentState = (currentMode == MODE_CHARGE) ? STATE_CHARGE_PAUSE : STATE_DISCHARGE_PAUSE;
+    applyPowerControl();
+
+    // 2. 等待电压稳定
+    delay(AUTO_CALIBRATE_STABLE_TIME);
+
+    // 3. 软重置BQ27220
+    resetBQ27220();
+
+    // 4. 读取校准后的SOC
+    int bq27220_soc = fuelGauge.readStateOfChargePercent();
+    if (bq27220_soc >= 0) {
+        int old_soc = customSOC;
+
+        // 检测方向是否正确
+        bool directionOk = false;
+        if (prevState == STATE_CHARGE_RUN || prevState == STATE_CHARGE_PAUSE) {
+            directionOk = (bq27220_soc >= customSOC);
+        } else if (prevState == STATE_DISCHARGE_RUN || prevState == STATE_DISCHARGE_PAUSE) {
+            directionOk = (bq27220_soc <= customSOC);
+        }
+
+        if (directionOk) {
+            // 方向正确，更新SOC
+            customSOC = bq27220_soc;
+            remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
+            batterySOC = customSOC;
+            batteryRemainCap = remainingCapacityMah;
+            Serial.printf("自动校准: SOC %d%% -> %d%%\n", old_soc, customSOC);
+
+            // 如果之前在快速校准模式，检查是否收敛
+            if (fastCalibrateMode) {
+                int diff = abs(bq27220_soc - old_soc);
+                if (diff <= CALIBRATE_CONVERGE_THRESHOLD) {
+                    // 收敛，恢复正常模式
+                    fastCalibrateMode = false;
+                    socDeviationCount = 0;
+                    Serial.println("自动校准: 收敛，恢复正常模式");
+                }
+            }
+        } else {
+            // 方向不对，进入快速校准模式
+            if (!fastCalibrateMode) {
+                fastCalibrateMode = true;
+                socDeviationCount = 0;
+                Serial.println("自动校准: 方向不对，进入快速校准模式");
+            }
+            socDeviationCount++;
+            lastBq27220Soc = bq27220_soc;
+
+            // 调整增益系数
+            if (socDeviationCount >= 3) {
+                // 连续3次方向不对，调整增益
+                float ratio = (float)bq27220_soc / (float)customSOC;
+                float newGain = coulombGain * ratio;
+
+                // 限制范围
+                if (newGain < COULOMB_GAIN_MIN) newGain = COULOMB_GAIN_MIN;
+                if (newGain > COULOMB_GAIN_MAX) newGain = COULOMB_GAIN_MAX;
+
+                coulombGain = newGain;
+                socDeviationCount = 0;
+                Serial.printf("自动校准: 调整增益系数 -> %.2f\n", coulombGain);
+            }
+
+            Serial.printf("自动校准: 方向不对 BQ=%d%%, SOC=%d%%, 不更新\n",
+                          bq27220_soc, customSOC);
+        }
+    } else {
+        int voltage_soc = voltageToSOC(batteryVoltage);
+        customSOC = voltage_soc;
+        remainingCapacityMah = (DESIGN_CAPACITY_MAH * voltage_soc) / 100;
+    }
+
+    // 5. 恢复运行
+    currentState = prevState;
+    applyPowerControl();
+    lastAutoCalibrateTime = now;
+    lastSocCalcTime = now;
+    autoCalibrating = false;
+
+    Serial.println("自动校准: 完成");
+}
+
 // ================= BQ27220 传感器读取 =================
 void readBatteryData() {
     if (!bq27220_ok) return;
+    if (autoCalibrating) return;  // 校准期间跳过
 
     int mv  = fuelGauge.readVoltageMillivolts();
     int ma  = fuelGauge.readCurrentMilliamps();
@@ -339,14 +489,15 @@ void readBatteryData() {
 
     bqFailCount = 0;
     batteryVoltage = mv;
-    batteryCurrent = ma;
+    batteryCurrent = ma;  // 瞬时电流（OLED显示用）
 
     float tempC = fuelGauge.readTemperatureCelsius();
     // 温度范围验证：-40°C到85°C（BQ27220工作范围）
     batteryTemp = (isnan(tempC) || tempC < -40.0f || tempC > 85.0f) ? NAN : tempC;
 
+    // 读取BQ27220平均电流（计算用）
     int avgMa = fuelGauge.readAverageCurrentMilliamps();
-    batteryAvgCurrent = (avgMa == INT16_MIN) ? 0 : avgMa;
+    batteryAvgCurrent = (avgMa == INT16_MIN) ? ma : avgMa;
 
     // 使用自定义SOC计算
     calculateCustomSOC();
@@ -612,6 +763,7 @@ void loop() {
 
     if (now - lastSensorRead >= 1000) {
         lastSensorRead = now;
+        checkAutoCalibrate();  // 自动校准（在readBatteryData之前）
         readBatteryData();
         checkAutoCutoff();
     }
