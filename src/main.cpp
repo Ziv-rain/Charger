@@ -56,6 +56,29 @@ uint8_t lastEvent = EVENT_NONE;
 int customSOC = -1;
 float remainingCapacityMah = DESIGN_CAPACITY_MAH;
 unsigned long lastSocCalcTime = 0;
+unsigned long bq27220RunTime = 0;
+bool bq27220NeedReset = false;
+unsigned long lastStateChangeTime = 0;
+
+// ================= 循环与能量统计 =================
+int cycleNumber = 0;
+int phaseType = 0;           // 0=休息, 1=充电, 2=放电
+unsigned long phaseStartTime = 0;
+float cumulativeMahIn = 0;
+float cumulativeMahOut = 0;
+float cycleMahIn = 0;
+float cycleMahOut = 0;
+float cumulativeWh = 0;
+int lastVoltage = -1;
+unsigned long lastDvDtTime = 0;
+float dvDt = 0;
+float estimatedIR = 0;
+
+// ================= 阶段更新辅助函数 =================
+void updatePhase(int newPhaseType) {
+    phaseType = newPhaseType;
+    phaseStartTime = millis();
+}
 
 // ================= 充放电硬件控制 (互锁) =================
 void applyPowerControl() {
@@ -88,6 +111,42 @@ void applyPowerControl() {
     }
 }
 
+// ================= BQ27220软重置 =================
+void resetBQ27220() {
+    if (!bq27220_ok) return;
+
+    Serial.println("BQ27220 执行软重置...");
+
+    // BQ27220软重置：Control() with RESET subcommand (0x0041)
+    Wire.beginTransmission(0x55);
+    Wire.write(0x00);  // Control register
+    Wire.write(0x41);  // RESET subcommand low byte
+    Wire.write(0x00);  // RESET subcommand high byte
+    Wire.endTransmission();
+
+    delay(3000);  // 等待重置完成，BQ27220需要时间重新学习
+
+    // 重新初始化
+    bq27220_ok = fuelGauge.begin(Wire, 0x55, -1, -1, 100000);
+    if (bq27220_ok) {
+        Serial.println("BQ27220 软重置成功，重新初始化完成");
+        bq27220RunTime = 0;
+        bq27220NeedReset = false;
+    } else {
+        Serial.println("BQ27220 软重置失败，尝试重新检测...");
+        // 尝试重新初始化
+        delay(500);
+        bq27220_ok = fuelGauge.begin(Wire, 0x55, -1, -1, 100000);
+        if (bq27220_ok) {
+            Serial.println("BQ27220 重新检测成功");
+            bq27220RunTime = 0;
+            bq27220NeedReset = false;
+        } else {
+            Serial.println("BQ27220 恢复失败，将使用电压法");
+        }
+    }
+}
+
 // ================= 电压转SOC查表 =================
 int voltageToSOC(int mv) {
     // 1500mAh锂电池电压-SOC对应关系
@@ -106,6 +165,26 @@ int voltageToSOC(int mv) {
 // ================= 自定义SOC计算 =================
 void calculateCustomSOC() {
     unsigned long now = millis();
+    static SystemState lastState = STATE_STOP;
+
+    // 检测状态变化，记录充放电运行时间
+    if (currentState != lastState) {
+        // 从运行状态切换到暂停/停止状态
+        if ((lastState == STATE_CHARGE_RUN || lastState == STATE_DISCHARGE_RUN) &&
+            (currentState == STATE_STOP || currentState == STATE_CHARGE_PAUSE || currentState == STATE_DISCHARGE_PAUSE)) {
+            bq27220RunTime += (now - lastStateChangeTime);
+            Serial.printf("BQ27220 累计运行时间: %lu ms (%.1f 分钟)\n",
+                          bq27220RunTime, bq27220RunTime / 60000.0f);
+
+            // 检查是否需要重置
+            if (bq27220RunTime >= BQ27220_RESET_THRESHOLD) {
+                bq27220NeedReset = true;
+                Serial.println("BQ27220 运行时间过长，标记需要重置");
+            }
+        }
+        lastState = currentState;
+        lastStateChangeTime = now;
+    }
 
     // 首次读取：从BQ27220初始化
     if (lastSocCalcTime == 0) {
@@ -126,13 +205,42 @@ void calculateCustomSOC() {
 
     // 非运行状态：用BQ27220的SOC校准（无电流流动，BQ27220是准的）
     if (currentState == STATE_STOP || currentState == STATE_CHARGE_PAUSE || currentState == STATE_DISCHARGE_PAUSE) {
+        // 状态切换后1.5秒内不校准SOC，等待电压稳定（充电→暂停时电压需要时间回落）
+        if (now - lastStateChangeTime < 1500) {
+            lastSocCalcTime = now;  // 更新时间，但不更新SOC
+            return;
+        }
+
+        // 如果BQ27220需要重置，先执行软重置
+        if (bq27220NeedReset) {
+            resetBQ27220();
+        }
+
         int bq27220_soc = fuelGauge.readStateOfChargePercent();
+        int voltage_soc = voltageToSOC(batteryVoltage);
+
+        // 对比BQ27220和电压法的SOC差异
+        int soc_diff = abs(bq27220_soc - voltage_soc);
+        Serial.printf("SOC对比: BQ27220=%d%%, 电压法=%d%%, 差异=%d%%\n",
+                      bq27220_soc, voltage_soc, soc_diff);
+
         if (bq27220_soc >= 0) {
-            customSOC = bq27220_soc;
-            remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
+            if (soc_diff > 15) {
+                // 差异过大，使用电压法
+                Serial.println("BQ27220与电压法差异过大，使用电压法校准");
+                customSOC = voltage_soc;
+                remainingCapacityMah = (DESIGN_CAPACITY_MAH * voltage_soc) / 100;
+                // 仅当BQ27220返回非零SOC时才标记需要重置（0%可能是刚重置还没初始化完）
+                if (bq27220_soc > 0) {
+                    bq27220NeedReset = true;
+                }
+            } else {
+                customSOC = bq27220_soc;
+                remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
+            }
         } else {
-            customSOC = voltageToSOC(batteryVoltage);
-            remainingCapacityMah = (DESIGN_CAPACITY_MAH * customSOC) / 100;
+            customSOC = voltage_soc;
+            remainingCapacityMah = (DESIGN_CAPACITY_MAH * voltage_soc) / 100;
         }
         lastSocCalcTime = now;
     } else {
@@ -193,6 +301,42 @@ void readBatteryData() {
         }
         return;
     }
+
+    // 数据验证：检查电压是否合理（2.5V-4.5V范围）
+    if (mv < 2500 || mv > 4500) {
+        Serial.printf("BQ27220 电压异常: %dmV，跳过本次读数\n", mv);
+        bqFailCount++;
+        if (bqFailCount > 5) {
+            bq27220_ok = false;
+            Serial.println("BQ27220 连续异常，标记故障！");
+        }
+        return;
+    }
+
+    // 数据验证：检查电流是否合理（-5A到5A范围）
+    if (ma < -5000 || ma > 5000) {
+        Serial.printf("BQ27220 电流异常: %dmA，跳过本次读数\n", ma);
+        bqFailCount++;
+        if (bqFailCount > 5) {
+            bq27220_ok = false;
+            Serial.println("BQ27220 连续异常，标记故障！");
+        }
+        return;
+    }
+
+    // 电压变化检测：如果电压跳变超过200mV，可能是读取错误
+    // 状态切换后1.5秒内不检测（充电→暂停时电压回落是正常的）
+    unsigned long currentTime = millis();
+    if (batteryVoltage > 0 && abs(mv - batteryVoltage) > 200 && (currentTime - lastStateChangeTime > 1500)) {
+        Serial.printf("BQ27220 电压跳变: %dmV -> %dmV，可能是读取错误\n", batteryVoltage, mv);
+        bqFailCount++;
+        if (bqFailCount > 5) {
+            bq27220_ok = false;
+            Serial.println("BQ27220 连续跳变，标记故障！");
+        }
+        return;
+    }
+
     bqFailCount = 0;
     batteryVoltage = mv;
     batteryCurrent = ma;
@@ -216,6 +360,47 @@ void readBatteryData() {
 
     fuelGauge.readBatteryStatus(batteryStatus);
     fuelGauge.readOperationStatus(operationStatus);
+
+    // 能量统计（库仑计数）
+    {
+        float dt_h = 1.0f / 3600.0f;  // 1秒对应的小时数
+        if (batteryCurrent > 0) {
+            // 充电
+            float mah = batteryCurrent * dt_h;
+            cumulativeMahIn += mah;
+            cycleMahIn += mah;
+            cumulativeWh += batteryVoltage * mah / 1000.0f;
+        } else if (batteryCurrent < 0) {
+            // 放电
+            float mah = (-batteryCurrent) * dt_h;
+            cumulativeMahOut += mah;
+            cycleMahOut += mah;
+        }
+    }
+
+    // dv/dt 计算（每秒更新）
+    if (lastVoltage > 0 && lastDvDtTime > 0) {
+        unsigned long now = millis();
+        float dt_sec = (now - lastDvDtTime) / 1000.0f;
+        if (dt_sec >= 0.5f) {
+            dvDt = (batteryVoltage - lastVoltage) / dt_sec;
+            lastVoltage = batteryVoltage;
+            lastDvDtTime = now;
+        }
+    } else {
+        lastVoltage = batteryVoltage;
+        lastDvDtTime = millis();
+    }
+
+    // 内阻估算（电流变化时）
+    if (abs(batteryCurrent) > 50 && abs(batteryAvgCurrent) > 50) {
+        // 简单估算：ΔV / ΔI
+        float deltaI = abs(batteryCurrent - batteryAvgCurrent);
+        if (deltaI > 10) {
+            estimatedIR = abs(dvDt) / deltaI * 1000.0f;  // mΩ
+            if (estimatedIR > 1000) estimatedIR = 0;  // 异常值过滤
+        }
+    }
 }
 
 // ================= 自动截止检测 =================
@@ -224,6 +409,7 @@ void checkAutoCutoff() {
         if (batteryVoltage >= bleChargeCutoff) {
             currentState = STATE_STOP;
             lastEvent = EVENT_AUTO_CUTOFF_FULL;
+            updatePhase(0);  // 回到休息状态
             applyPowerControl();
             if (sd_card_ok) logToSDCard();
             updateOLED();
@@ -233,6 +419,7 @@ void checkAutoCutoff() {
         if (batteryVoltage <= bleDischargeCutoff) {
             currentState = STATE_STOP;
             lastEvent = EVENT_AUTO_CUTOFF_EMPTY;
+            updatePhase(0);  // 回到休息状态
             applyPowerControl();
             if (sd_card_ok) logToSDCard();
             updateOLED();
@@ -249,11 +436,24 @@ void clickKey1() {
     switch (currentState) {
         case STATE_STOP:
             currentState = (currentMode == MODE_CHARGE) ? STATE_CHARGE_RUN : STATE_DISCHARGE_RUN;
+            if (fromStop) {
+                cycleNumber++;
+                cycleMahIn = 0;
+                cycleMahOut = 0;
+            }
             break;
         case STATE_CHARGE_RUN:       currentState = STATE_CHARGE_PAUSE; break;
         case STATE_CHARGE_PAUSE:     currentState = STATE_CHARGE_RUN; break;
         case STATE_DISCHARGE_RUN:    currentState = STATE_DISCHARGE_PAUSE; break;
         case STATE_DISCHARGE_PAUSE:  currentState = STATE_DISCHARGE_RUN; break;
+    }
+    // 更新阶段类型
+    if (currentState == STATE_CHARGE_RUN || currentState == STATE_CHARGE_PAUSE) {
+        updatePhase(1);  // 充电
+    } else if (currentState == STATE_DISCHARGE_RUN || currentState == STATE_DISCHARGE_PAUSE) {
+        updatePhase(2);  // 放电
+    } else {
+        updatePhase(0);  // 休息
     }
     if (fromStop) {
         lastEvent = EVENT_MANUAL_START;
@@ -272,6 +472,7 @@ void longPressKey1() {
     if (currentState != STATE_STOP) {
         currentState = STATE_STOP;
         lastEvent = EVENT_MANUAL_STOP;
+        updatePhase(0);  // 回到休息状态
         applyPowerControl();
         if (sd_card_ok) logToSDCard();
         updateOLED();

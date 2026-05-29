@@ -107,6 +107,24 @@ extern uint8_t lastEvent;
 extern int customSOC;
 extern float remainingCapacityMah;
 extern unsigned long lastSocCalcTime;
+extern unsigned long bq27220RunTime;        // BQ27220连续运行时间(ms)
+extern bool bq27220NeedReset;               // BQ27220是否需要重置
+extern unsigned long lastStateChangeTime;   // 上次状态变化时间
+#define BQ27220_RESET_THRESHOLD 1800000     // 30分钟运行后需要重置(毫秒)
+
+// ================= 循环与能量统计 =================
+extern int cycleNumber;
+extern int phaseType;           // 0=休息, 1=充电, 2=放电
+extern unsigned long phaseStartTime;
+extern float cumulativeMahIn;
+extern float cumulativeMahOut;
+extern float cycleMahIn;
+extern float cycleMahOut;
+extern float cumulativeWh;
+extern int lastVoltage;
+extern unsigned long lastDvDtTime;
+extern float dvDt;
+extern float estimatedIR;
 
 // ================= 函数声明 =================
 void applyPowerControl();

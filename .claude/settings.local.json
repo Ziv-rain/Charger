@@ -8,7 +8,8 @@
       "Bash(where pio *)",
       "Bash(python -m platformio --version)",
       "Bash(C:/Users/zouyuhao/.platformio/penv/Scripts/pio.exe run *)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "WebSearch"
     ]
   }
 }
