@@ -33,8 +33,7 @@ bool initSDCard() {
                         "cycle_number,phase_type,elapsed_phase_sec,"
                         "cumulative_mah_in,cumulative_mah_out,"
                         "cycle_mah_in,cycle_mah_out,"
-                        "cumulative_wh,dv_dt_mV_per_s,estimated_IR_mOhm,"
-                        "coulomb_gain_charge,coulomb_gain_discharge");
+                        "cumulative_wh,dv_dt_mV_per_s,estimated_IR_mOhm");
         logFile.close();
         Serial.printf("SD卡初始化成功 -> %s\n", logFilename);
         sdFailCount = 0;

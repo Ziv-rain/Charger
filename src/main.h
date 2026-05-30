@@ -107,31 +107,12 @@ extern uint8_t lastEvent;
 extern int customSOC;
 extern float remainingCapacityMah;
 extern unsigned long lastSocCalcTime;
-extern unsigned long bq27220RunTime;        // BQ27220连续运行时间(ms)
-extern bool bq27220NeedReset;               // BQ27220是否需要重置
-extern unsigned long lastStateChangeTime;   // 上次状态变化时间
-#define BQ27220_RESET_THRESHOLD 1800000     // 30分钟运行后需要重置(毫秒)
-
-// ================= 库仑计数优化 =================
-#define COULOMB_GAIN_INIT 0.95f              // 库仑计数增益系数初始值
-#define CURRENT_FILTER_SIZE 3                // 电流滤波窗口大小
-extern float currentFilterBuf[CURRENT_FILTER_SIZE];
-extern int currentFilterIdx;
-extern float coulombGainCharge;              // 充电动态增益系数
-extern float coulombGainDischarge;           // 放电动态增益系数
 
 // ================= 自动校准 =================
 extern unsigned long lastAutoCalibrateTime;
 extern bool autoCalibrating;
-extern bool fastCalibrateMode;               // 是否在快速校准模式
-extern int lastBq27220Soc;                   // 上次BQ27220读数
-extern int socDeviationCount;                // 偏差计数
-#define AUTO_CALIBRATE_INTERVAL 900000       // 15分钟（正常间隔）
-#define AUTO_CALIBRATE_FAST_INTERVAL 180000  // 3分钟（快速校准）
+#define AUTO_CALIBRATE_INTERVAL 600000       // 10分钟（可调）
 #define AUTO_CALIBRATE_STABLE_TIME 1500      // 电压稳定等待时间
-#define CALIBRATE_CONVERGE_THRESHOLD 2       // 收敛阈值
-#define COULOMB_GAIN_MIN 0.5f
-#define COULOMB_GAIN_MAX 1.5f
 
 // ================= 循环与能量统计 =================
 extern int cycleNumber;

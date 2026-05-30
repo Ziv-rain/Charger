@@ -56,22 +56,10 @@ uint8_t lastEvent = EVENT_NONE;
 int customSOC = -1;
 float remainingCapacityMah = DESIGN_CAPACITY_MAH;
 unsigned long lastSocCalcTime = 0;
-unsigned long bq27220RunTime = 0;
-bool bq27220NeedReset = false;
-unsigned long lastStateChangeTime = 0;
-
-// ================= 库仑计数优化 =================
-float currentFilterBuf[CURRENT_FILTER_SIZE] = {0};
-int currentFilterIdx = 0;
-float coulombGainCharge = COULOMB_GAIN_INIT;     // 充电动态增益系数
-float coulombGainDischarge = COULOMB_GAIN_INIT;  // 放电动态增益系数
 
 // ================= 自动校准 =================
 unsigned long lastAutoCalibrateTime = 0;
 bool autoCalibrating = false;
-bool fastCalibrateMode = false;
-int lastBq27220Soc = -1;
-int socDeviationCount = 0;
 
 // ================= 循环与能量统计 =================
 int cycleNumber = 0;
@@ -178,103 +166,19 @@ int voltageToSOC(int mv) {
 // ================= 自定义SOC计算 =================
 void calculateCustomSOC() {
     if (autoCalibrating) return;  // 校准期间跳过
-    unsigned long now = millis();
-    static SystemState lastState = STATE_STOP;
 
-    // 检测状态变化，记录充放电运行时间
-    if (currentState != lastState) {
-        // 从运行状态切换到暂停/停止状态
-        if ((lastState == STATE_CHARGE_RUN || lastState == STATE_DISCHARGE_RUN) &&
-            (currentState == STATE_STOP || currentState == STATE_CHARGE_PAUSE || currentState == STATE_DISCHARGE_PAUSE)) {
-            bq27220RunTime += (now - lastStateChangeTime);
-            Serial.printf("BQ27220 累计运行时间: %lu ms (%.1f 分钟)\n",
-                          bq27220RunTime, bq27220RunTime / 60000.0f);
-
-            // 检查是否需要重置
-            if (bq27220RunTime >= BQ27220_RESET_THRESHOLD) {
-                bq27220NeedReset = true;
-                Serial.println("BQ27220 运行时间过长，标记需要重置");
-            }
-        }
-        lastState = currentState;
-        lastStateChangeTime = now;
-    }
-
-    // 首次读取：从BQ27220初始化
-    if (lastSocCalcTime == 0) {
-        int bq27220_soc = fuelGauge.readStateOfChargePercent();
-        if (bq27220_soc >= 0) {
-            customSOC = bq27220_soc;
-            remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
-            Serial.printf("SOC初始化: BQ27220_SOC=%d%%, RM=%dmAh\n",
-                          bq27220_soc, remainingCapacityMah);
-        } else {
-            customSOC = voltageToSOC(batteryVoltage);
-            remainingCapacityMah = (DESIGN_CAPACITY_MAH * customSOC) / 100;
-            Serial.printf("SOC初始化: BQ27220失败, 电压法=%d%%\n", customSOC);
-        }
-        lastSocCalcTime = now;
-        return;
-    }
-
-    // 非运行状态：用BQ27220的SOC校准（无电流流动，BQ27220是准的）
-    if (currentState == STATE_STOP || currentState == STATE_CHARGE_PAUSE || currentState == STATE_DISCHARGE_PAUSE) {
-        // 状态切换后1.5秒内不校准SOC，等待电压稳定（充电→暂停时电压需要时间回落）
-        if (now - lastStateChangeTime < 1500) {
-            lastSocCalcTime = now;  // 更新时间，但不更新SOC
-            return;
-        }
-
-        // 如果BQ27220需要重置，先执行软重置
-        if (bq27220NeedReset) {
-            resetBQ27220();
-        }
-
-        int bq27220_soc = fuelGauge.readStateOfChargePercent();
-        int voltage_soc = voltageToSOC(batteryVoltage);
-
-        // 对比BQ27220和电压法的SOC差异
-        int soc_diff = abs(bq27220_soc - voltage_soc);
-        Serial.printf("SOC对比: BQ27220=%d%%, 电压法=%d%%, 差异=%d%%\n",
-                      bq27220_soc, voltage_soc, soc_diff);
-
-        if (bq27220_soc >= 0) {
-            if (soc_diff > 15) {
-                // 差异过大，使用电压法
-                Serial.println("BQ27220与电压法差异过大，使用电压法校准");
-                customSOC = voltage_soc;
-                remainingCapacityMah = (DESIGN_CAPACITY_MAH * voltage_soc) / 100;
-                // 仅当BQ27220返回非零SOC时才标记需要重置（0%可能是刚重置还没初始化完）
-                if (bq27220_soc > 0) {
-                    bq27220NeedReset = true;
-                }
-            } else {
-                customSOC = bq27220_soc;
-                remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
-            }
-        } else {
-            customSOC = voltage_soc;
-            remainingCapacityMah = (DESIGN_CAPACITY_MAH * voltage_soc) / 100;
-        }
-        lastSocCalcTime = now;
+    // 直接使用BQ27220的SOC
+    int bq27220_soc = fuelGauge.readStateOfChargePercent();
+    if (bq27220_soc >= 0) {
+        customSOC = bq27220_soc;
+        remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
     } else {
-        // 充放电状态：库仑计数（BQ27220此时不准，不用它）
-        float dt_hours = (now - lastSocCalcTime) / 3600000.0f;
-        // 使用平均电流计算，根据充放电状态选择增益系数
-        float calcCurrent = (batteryAvgCurrent != 0) ? batteryAvgCurrent : batteryCurrent;
-        float gain = (currentState == STATE_CHARGE_RUN) ? coulombGainCharge : coulombGainDischarge;
-        float delta_mah = calcCurrent * dt_hours * gain;
-        remainingCapacityMah += delta_mah;
-        lastSocCalcTime = now;
-
-        if (remainingCapacityMah > DESIGN_CAPACITY_MAH)
-            remainingCapacityMah = DESIGN_CAPACITY_MAH;
-        if (remainingCapacityMah < 0)
-            remainingCapacityMah = 0;
-
-        customSOC = (remainingCapacityMah * 100) / DESIGN_CAPACITY_MAH;
+        // BQ27220读取失败，使用电压法备用
+        customSOC = voltageToSOC(batteryVoltage);
+        remainingCapacityMah = (DESIGN_CAPACITY_MAH * customSOC) / 100;
     }
 
+    // 边界处理
     if (customSOC > 100) customSOC = 100;
     if (customSOC < 0) customSOC = 0;
 
@@ -282,37 +186,6 @@ void calculateCustomSOC() {
     batteryRemainCap = remainingCapacityMah;
     batteryFullCap = DESIGN_CAPACITY_MAH;
     batteryDesignCap = DESIGN_CAPACITY_MAH;
-
-    static float prevRM = -1;
-    float rmDelta = (prevRM >= 0) ? (remainingCapacityMah - prevRM) : 0;
-    float socDeltaFloat = rmDelta * 100.0f / DESIGN_CAPACITY_MAH;
-    prevRM = remainingCapacityMah;
-
-    // 计算自定义预计剩余时间（分钟）
-    int etaMin = -1;
-    if (currentState == STATE_DISCHARGE_RUN && batteryCurrent < 0) {
-        etaMin = (int)(remainingCapacityMah / (-batteryCurrent) * 60);
-    } else if (currentState == STATE_CHARGE_RUN && batteryCurrent > 0) {
-        etaMin = (int)((DESIGN_CAPACITY_MAH - remainingCapacityMah) / batteryCurrent * 60);
-    }
-
-    Serial.printf("[SOC] V=%dmV I=%dmA RM=%.1fmAh SOC=%d%% dSOC=%+.3f%% "
-                  "ETA自定义=%dm BQ_TTE=%dm BQ_TTF=%dm state=%d\n",
-                  batteryVoltage, batteryCurrent, remainingCapacityMah,
-                  customSOC, socDeltaFloat, etaMin, batteryTTE, batteryTTF,
-                  currentState);
-}
-
-// ================= 电流滤波 =================
-float filterCurrent(float raw) {
-    currentFilterBuf[currentFilterIdx] = raw;
-    currentFilterIdx = (currentFilterIdx + 1) % CURRENT_FILTER_SIZE;
-
-    float sum = 0;
-    for (int i = 0; i < CURRENT_FILTER_SIZE; i++) {
-        sum += currentFilterBuf[i];
-    }
-    return sum / CURRENT_FILTER_SIZE;
 }
 
 // ================= 自动校准 =================
@@ -322,31 +195,11 @@ void checkAutoCalibrate() {
     // 仅在充放电运行状态触发
     if (currentState != STATE_CHARGE_RUN && currentState != STATE_DISCHARGE_RUN) {
         lastAutoCalibrateTime = now;
-        fastCalibrateMode = false;
-        socDeviationCount = 0;
         return;
     }
 
-    // 判断是否在充放电末尾，使用更短的校准间隔
-    bool isNearEnd = false;
-    if (currentState == STATE_CHARGE_RUN && (customSOC > 90 || batteryVoltage > 4100)) {
-        isNearEnd = true;
-    } else if (currentState == STATE_DISCHARGE_RUN && (customSOC < 20 || batteryVoltage < 3400)) {
-        isNearEnd = true;
-    }
-
-    // 确定校准间隔
-    unsigned long calibrateInterval;
-    if (fastCalibrateMode) {
-        calibrateInterval = AUTO_CALIBRATE_FAST_INTERVAL;  // 3分钟
-    } else if (isNearEnd) {
-        calibrateInterval = AUTO_CALIBRATE_FAST_INTERVAL;  // 3分钟（末尾）
-    } else {
-        calibrateInterval = AUTO_CALIBRATE_INTERVAL;       // 15分钟
-    }
-
     // 检查是否到达校准间隔
-    if (now - lastAutoCalibrateTime < calibrateInterval) return;
+    if (now - lastAutoCalibrateTime < AUTO_CALIBRATE_INTERVAL) return;
 
     Serial.println("自动校准: 开始...");
     autoCalibrating = true;
@@ -365,86 +218,17 @@ void checkAutoCalibrate() {
     // 4. 读取校准后的SOC
     int bq27220_soc = fuelGauge.readStateOfChargePercent();
     if (bq27220_soc >= 0) {
-        int old_soc = customSOC;
-
-        // 检测方向是否正确
-        bool directionOk = false;
-        if (prevState == STATE_CHARGE_RUN || prevState == STATE_CHARGE_PAUSE) {
-            directionOk = (bq27220_soc >= customSOC);
-        } else if (prevState == STATE_DISCHARGE_RUN || prevState == STATE_DISCHARGE_PAUSE) {
-            directionOk = (bq27220_soc <= customSOC);
-        }
-
-        if (directionOk) {
-            // 方向正确，更新SOC
-            customSOC = bq27220_soc;
-            remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
-            batterySOC = customSOC;
-            batteryRemainCap = remainingCapacityMah;
-            Serial.printf("自动校准: SOC %d%% -> %d%%\n", old_soc, customSOC);
-
-            // 如果之前在快速校准模式，检查是否收敛
-            if (fastCalibrateMode) {
-                int diff = abs(bq27220_soc - old_soc);
-                if (diff <= CALIBRATE_CONVERGE_THRESHOLD) {
-                    // 收敛，恢复正常模式
-                    fastCalibrateMode = false;
-                    socDeviationCount = 0;
-                    Serial.println("自动校准: 收敛，恢复正常模式");
-                }
-            }
-        } else {
-            // 方向不对，进入快速校准模式
-            if (!fastCalibrateMode) {
-                fastCalibrateMode = true;
-                socDeviationCount = 0;
-                Serial.println("自动校准: 方向不对，进入快速校准模式");
-            }
-            socDeviationCount++;
-            lastBq27220Soc = bq27220_soc;
-
-            // 调整增益系数
-            if (socDeviationCount >= 3) {
-                // 连续3次方向不对，调整增益
-                // 如果库仑计数偏快（SOC < BQ），ratio < 1，降低增益
-                // 如果库仑计数偏慢（SOC > BQ），ratio > 1，提高增益
-                float ratio = (float)customSOC / (float)bq27220_soc;
-
-                // 根据充放电状态调整对应的增益系数
-                if (prevState == STATE_CHARGE_RUN || prevState == STATE_CHARGE_PAUSE) {
-                    float newGain = coulombGainCharge * ratio;
-                    if (newGain < COULOMB_GAIN_MIN) newGain = COULOMB_GAIN_MIN;
-                    if (newGain > COULOMB_GAIN_MAX) newGain = COULOMB_GAIN_MAX;
-                    coulombGainCharge = newGain;
-                    Serial.printf("自动校准: 调整充放电增益 -> 充电=%.2f, 放电=%.2f\n",
-                                  coulombGainCharge, coulombGainDischarge);
-                } else {
-                    float newGain = coulombGainDischarge * ratio;
-                    if (newGain < COULOMB_GAIN_MIN) newGain = COULOMB_GAIN_MIN;
-                    if (newGain > COULOMB_GAIN_MAX) newGain = COULOMB_GAIN_MAX;
-                    coulombGainDischarge = newGain;
-                    Serial.printf("自动校准: 调整放电增益 -> 充电=%.2f, 放电=%.2f\n",
-                                  coulombGainCharge, coulombGainDischarge);
-                }
-
-                socDeviationCount = 0;
-                Serial.printf("自动校准: 调整增益系数 -> %.2f\n", coulombGain);
-            }
-
-            Serial.printf("自动校准: 方向不对 BQ=%d%%, SOC=%d%%, 不更新\n",
-                          bq27220_soc, customSOC);
-        }
-    } else {
-        int voltage_soc = voltageToSOC(batteryVoltage);
-        customSOC = voltage_soc;
-        remainingCapacityMah = (DESIGN_CAPACITY_MAH * voltage_soc) / 100;
+        customSOC = bq27220_soc;
+        remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
+        batterySOC = customSOC;
+        batteryRemainCap = remainingCapacityMah;
+        Serial.printf("自动校准: SOC -> %d%%\n", customSOC);
     }
 
     // 5. 恢复运行
     currentState = prevState;
     applyPowerControl();
     lastAutoCalibrateTime = now;
-    lastSocCalcTime = now;
     autoCalibrating = false;
 
     Serial.println("自动校准: 完成");
