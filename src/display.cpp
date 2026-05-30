@@ -21,12 +21,16 @@ void updateOLED() {
     String line2 = "";
     line2 += (currentMode == MODE_CHARGE) ? "充电模式 | " : "放电模式 | ";
     line2 += String((currentMode == MODE_CHARGE) ? chargeGear : dischargeGear) + "档 | ";
-    switch (currentState) {
-        case STATE_STOP:             line2 += "停止"; break;
-        case STATE_CHARGE_RUN:
-        case STATE_DISCHARGE_RUN:    line2 += "运行"; break;
-        case STATE_CHARGE_PAUSE:
-        case STATE_DISCHARGE_PAUSE:  line2 += "暂停"; break;
+    if (autoCalibrating) {
+        line2 += "校准中";
+    } else {
+        switch (currentState) {
+            case STATE_STOP:             line2 += "停止"; break;
+            case STATE_CHARGE_RUN:
+            case STATE_DISCHARGE_RUN:    line2 += "运行"; break;
+            case STATE_CHARGE_PAUSE:
+            case STATE_DISCHARGE_PAUSE:  line2 += "暂停"; break;
+        }
     }
     u8g2.print(line2.c_str());
 

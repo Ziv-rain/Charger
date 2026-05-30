@@ -120,11 +120,7 @@ void logToSDCard() {
         logFile.print(",");
         logFile.print(dvDt, 2);
         logFile.print(",");
-        logFile.print(estimatedIR, 1);
-        logFile.print(",");
-        logFile.print(coulombGainCharge, 3);
-        logFile.print(",");
-        logFile.println(coulombGainDischarge, 3);
+        logFile.println(estimatedIR, 1);
     } else {
         logFile.print(millis());
         logFile.print(",");
@@ -141,10 +137,7 @@ void logToSDCard() {
         logFile.print(phaseType);
         logFile.print(",");
         logFile.print((millis() - phaseStartTime) / 1000);
-        logFile.print(",-1,-1,-1,-1,-1,-1,-1,");
-        logFile.print(coulombGainCharge, 3);
-        logFile.print(",");
-        logFile.println(coulombGainDischarge, 3);
+        logFile.println(",-1,-1,-1,-1,-1,-1,-1");
     }
     lastEvent = EVENT_NONE;
     logFile.flush();  // 显式刷新，防止断电数据丢失

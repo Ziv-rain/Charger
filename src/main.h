@@ -106,7 +106,6 @@ extern uint8_t lastEvent;
 #define DESIGN_CAPACITY_MAH 1500
 extern int customSOC;
 extern float remainingCapacityMah;
-extern unsigned long lastSocCalcTime;
 
 // ================= 自动校准 =================
 extern unsigned long lastAutoCalibrateTime;

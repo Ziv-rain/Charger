@@ -55,7 +55,6 @@ uint8_t lastEvent = EVENT_NONE;
 // ================= 自定义SOC计算 =================
 int customSOC = -1;
 float remainingCapacityMah = DESIGN_CAPACITY_MAH;
-unsigned long lastSocCalcTime = 0;
 
 // ================= 自动校准 =================
 unsigned long lastAutoCalibrateTime = 0;
@@ -131,8 +130,6 @@ void resetBQ27220() {
     bq27220_ok = fuelGauge.begin(Wire, 0x55, -1, -1, 100000);
     if (bq27220_ok) {
         Serial.println("BQ27220 软重置成功，重新初始化完成");
-        bq27220RunTime = 0;
-        bq27220NeedReset = false;
     } else {
         Serial.println("BQ27220 软重置失败，尝试重新检测...");
         // 尝试重新初始化
@@ -140,8 +137,6 @@ void resetBQ27220() {
         bq27220_ok = fuelGauge.begin(Wire, 0x55, -1, -1, 100000);
         if (bq27220_ok) {
             Serial.println("BQ27220 重新检测成功");
-            bq27220RunTime = 0;
-            bq27220NeedReset = false;
         } else {
             Serial.println("BQ27220 恢复失败，将使用电压法");
         }
@@ -164,11 +159,9 @@ int voltageToSOC(int mv) {
 }
 
 // ================= 自定义SOC计算 =================
-void calculateCustomSOC() {
+void calculateCustomSOC(int bq27220_soc) {
     if (autoCalibrating) return;  // 校准期间跳过
 
-    // 直接使用BQ27220的SOC
-    int bq27220_soc = fuelGauge.readStateOfChargePercent();
     if (bq27220_soc >= 0) {
         customSOC = bq27220_soc;
         remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
@@ -198,15 +191,22 @@ void checkAutoCalibrate() {
         return;
     }
 
+    // 根据快充/慢充模式调整校准间隔
+    // 快充模式（gear==2）：3分钟校准一次
+    // 慢充模式（gear==1）：10分钟校准一次
+    bool isFastCharge = (currentState == STATE_CHARGE_RUN && chargeGear == 2) ||
+                        (currentState == STATE_DISCHARGE_RUN && dischargeGear == 2);
+    unsigned long calibrateInterval = isFastCharge ? 180000 : AUTO_CALIBRATE_INTERVAL;  // 3分钟 : 10分钟
+
     // 检查是否到达校准间隔
-    if (now - lastAutoCalibrateTime < AUTO_CALIBRATE_INTERVAL) return;
+    if (now - lastAutoCalibrateTime < calibrateInterval) return;
 
     Serial.println("自动校准: 开始...");
     autoCalibrating = true;
 
     // 1. 暂停充放电
     SystemState prevState = currentState;
-    currentState = (currentMode == MODE_CHARGE) ? STATE_CHARGE_PAUSE : STATE_DISCHARGE_PAUSE;
+    currentState = (currentState == STATE_CHARGE_RUN) ? STATE_CHARGE_PAUSE : STATE_DISCHARGE_PAUSE;
     applyPowerControl();
 
     // 2. 等待电压稳定
@@ -220,10 +220,15 @@ void checkAutoCalibrate() {
     if (bq27220_soc >= 0) {
         customSOC = bq27220_soc;
         remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
-        batterySOC = customSOC;
-        batteryRemainCap = remainingCapacityMah;
         Serial.printf("自动校准: SOC -> %d%%\n", customSOC);
+    } else {
+        // BQ27220读取失败，使用电压法备用
+        customSOC = voltageToSOC(batteryVoltage);
+        remainingCapacityMah = (DESIGN_CAPACITY_MAH * customSOC) / 100;
+        Serial.printf("自动校准: BQ27220失败，电压法 SOC -> %d%%\n", customSOC);
     }
+    batterySOC = customSOC;
+    batteryRemainCap = remainingCapacityMah;
 
     // 5. 恢复运行
     currentState = prevState;
@@ -273,19 +278,6 @@ void readBatteryData() {
         return;
     }
 
-    // 电压变化检测：如果电压跳变超过200mV，可能是读取错误
-    // 状态切换后1.5秒内不检测（充电→暂停时电压回落是正常的）
-    unsigned long currentTime = millis();
-    if (batteryVoltage > 0 && abs(mv - batteryVoltage) > 200 && (currentTime - lastStateChangeTime > 1500)) {
-        Serial.printf("BQ27220 电压跳变: %dmV -> %dmV，可能是读取错误\n", batteryVoltage, mv);
-        bqFailCount++;
-        if (bqFailCount > 5) {
-            bq27220_ok = false;
-            Serial.println("BQ27220 连续跳变，标记故障！");
-        }
-        return;
-    }
-
     bqFailCount = 0;
     batteryVoltage = mv;
     batteryCurrent = ma;  // 瞬时电流（OLED显示用）
@@ -298,8 +290,9 @@ void readBatteryData() {
     int avgMa = fuelGauge.readAverageCurrentMilliamps();
     batteryAvgCurrent = (avgMa == INT16_MIN) ? ma : avgMa;
 
-    // 使用自定义SOC计算
-    calculateCustomSOC();
+    // 使用自定义SOC计算（SOC已在上面读取，避免重复I2C通信）
+    int bq27220_soc = fuelGauge.readStateOfChargePercent();
+    calculateCustomSOC(bq27220_soc);
 
     // 其他数据仍从BQ27220读取
     batteryCycleCount = fuelGauge.readCycleCount();
@@ -351,6 +344,12 @@ void readBatteryData() {
             if (estimatedIR > 1000) estimatedIR = 0;  // 异常值过滤
         }
     }
+
+    // 周期性状态输出
+    Serial.printf("[SOC] V=%dmV I=%dmA SOC=%d%% RM=%dmAh T=%sC state=%d\n",
+                  batteryVoltage, batteryCurrent, batterySOC, batteryRemainCap,
+                  isnan(batteryTemp) ? "NAN" : String(batteryTemp, 1).c_str(),
+                  currentState);
 }
 
 // ================= 自动截止检测 =================
@@ -598,7 +597,7 @@ void loop() {
         }
     }
 
-    if (!bq27220_ok && now - lastBQRecovery >= 30000) {
+    if (!bq27220_ok && now - lastBQRecovery >= 10000) {
         lastBQRecovery = now;
         bq27220_ok = fuelGauge.begin(Wire);
         if (bq27220_ok) {
