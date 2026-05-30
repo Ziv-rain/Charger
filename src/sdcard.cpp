@@ -34,7 +34,7 @@ bool initSDCard() {
                         "cumulative_mah_in,cumulative_mah_out,"
                         "cycle_mah_in,cycle_mah_out,"
                         "cumulative_wh,dv_dt_mV_per_s,estimated_IR_mOhm,"
-                        "coulomb_gain");
+                        "coulomb_gain_charge,coulomb_gain_discharge");
         logFile.close();
         Serial.printf("SD卡初始化成功 -> %s\n", logFilename);
         sdFailCount = 0;
@@ -123,7 +123,9 @@ void logToSDCard() {
         logFile.print(",");
         logFile.print(estimatedIR, 1);
         logFile.print(",");
-        logFile.println(coulombGain, 3);
+        logFile.print(coulombGainCharge, 3);
+        logFile.print(",");
+        logFile.println(coulombGainDischarge, 3);
     } else {
         logFile.print(millis());
         logFile.print(",");
@@ -141,7 +143,9 @@ void logToSDCard() {
         logFile.print(",");
         logFile.print((millis() - phaseStartTime) / 1000);
         logFile.print(",-1,-1,-1,-1,-1,-1,-1,");
-        logFile.println(coulombGain, 3);
+        logFile.print(coulombGainCharge, 3);
+        logFile.print(",");
+        logFile.println(coulombGainDischarge, 3);
     }
     lastEvent = EVENT_NONE;
     logFile.flush();  // 显式刷新，防止断电数据丢失

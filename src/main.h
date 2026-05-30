@@ -117,7 +117,8 @@ extern unsigned long lastStateChangeTime;   // 上次状态变化时间
 #define CURRENT_FILTER_SIZE 3                // 电流滤波窗口大小
 extern float currentFilterBuf[CURRENT_FILTER_SIZE];
 extern int currentFilterIdx;
-extern float coulombGain;                    // 动态增益系数
+extern float coulombGainCharge;              // 充电动态增益系数
+extern float coulombGainDischarge;           // 放电动态增益系数
 
 // ================= 自动校准 =================
 extern unsigned long lastAutoCalibrateTime;

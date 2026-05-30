@@ -63,7 +63,8 @@ unsigned long lastStateChangeTime = 0;
 // ================= 库仑计数优化 =================
 float currentFilterBuf[CURRENT_FILTER_SIZE] = {0};
 int currentFilterIdx = 0;
-float coulombGain = COULOMB_GAIN_INIT;  // 动态增益系数
+float coulombGainCharge = COULOMB_GAIN_INIT;     // 充电动态增益系数
+float coulombGainDischarge = COULOMB_GAIN_INIT;  // 放电动态增益系数
 
 // ================= 自动校准 =================
 unsigned long lastAutoCalibrateTime = 0;
@@ -259,9 +260,10 @@ void calculateCustomSOC() {
     } else {
         // 充放电状态：库仑计数（BQ27220此时不准，不用它）
         float dt_hours = (now - lastSocCalcTime) / 3600000.0f;
-        // 使用平均电流计算，增益系数让SOC变化更慢
+        // 使用平均电流计算，根据充放电状态选择增益系数
         float calcCurrent = (batteryAvgCurrent != 0) ? batteryAvgCurrent : batteryCurrent;
-        float delta_mah = calcCurrent * dt_hours * coulombGain;
+        float gain = (currentState == STATE_CHARGE_RUN) ? coulombGainCharge : coulombGainDischarge;
+        float delta_mah = calcCurrent * dt_hours * gain;
         remainingCapacityMah += delta_mah;
         lastSocCalcTime = now;
 
@@ -404,14 +406,27 @@ void checkAutoCalibrate() {
             // 调整增益系数
             if (socDeviationCount >= 3) {
                 // 连续3次方向不对，调整增益
-                float ratio = (float)bq27220_soc / (float)customSOC;
-                float newGain = coulombGain * ratio;
+                // 如果库仑计数偏快（SOC < BQ），ratio < 1，降低增益
+                // 如果库仑计数偏慢（SOC > BQ），ratio > 1，提高增益
+                float ratio = (float)customSOC / (float)bq27220_soc;
 
-                // 限制范围
-                if (newGain < COULOMB_GAIN_MIN) newGain = COULOMB_GAIN_MIN;
-                if (newGain > COULOMB_GAIN_MAX) newGain = COULOMB_GAIN_MAX;
+                // 根据充放电状态调整对应的增益系数
+                if (prevState == STATE_CHARGE_RUN || prevState == STATE_CHARGE_PAUSE) {
+                    float newGain = coulombGainCharge * ratio;
+                    if (newGain < COULOMB_GAIN_MIN) newGain = COULOMB_GAIN_MIN;
+                    if (newGain > COULOMB_GAIN_MAX) newGain = COULOMB_GAIN_MAX;
+                    coulombGainCharge = newGain;
+                    Serial.printf("自动校准: 调整充放电增益 -> 充电=%.2f, 放电=%.2f\n",
+                                  coulombGainCharge, coulombGainDischarge);
+                } else {
+                    float newGain = coulombGainDischarge * ratio;
+                    if (newGain < COULOMB_GAIN_MIN) newGain = COULOMB_GAIN_MIN;
+                    if (newGain > COULOMB_GAIN_MAX) newGain = COULOMB_GAIN_MAX;
+                    coulombGainDischarge = newGain;
+                    Serial.printf("自动校准: 调整放电增益 -> 充电=%.2f, 放电=%.2f\n",
+                                  coulombGainCharge, coulombGainDischarge);
+                }
 
-                coulombGain = newGain;
                 socDeviationCount = 0;
                 Serial.printf("自动校准: 调整增益系数 -> %.2f\n", coulombGain);
             }
