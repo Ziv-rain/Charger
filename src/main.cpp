@@ -56,6 +56,17 @@ uint8_t lastEvent = EVENT_NONE;
 int customSOC = -1;
 float remainingCapacityMah = DESIGN_CAPACITY_MAH;
 
+// ================= AI模式全局变量 =================
+bool aiMode = false;
+bool aiModelReady = false;
+int aiSOC = -1;
+int aiRemainCap = -1;
+
+// ================= 同时长按检测 =================
+static unsigned long key1LongPressTime = 0;
+static unsigned long key2LongPressTime = 0;
+static const unsigned long COMBO_GRACE_MS = 500;  // 组合按键容差窗口
+
 // ================= 自动校准 =================
 unsigned long lastAutoCalibrateTime = 0;
 bool autoCalibrating = false;
@@ -162,21 +173,31 @@ int voltageToSOC(int mv) {
 void calculateCustomSOC(int bq27220_soc) {
     if (autoCalibrating) return;  // 校准期间跳过
 
+    int bq_soc, bq_rm;
     if (bq27220_soc >= 0) {
-        customSOC = bq27220_soc;
-        remainingCapacityMah = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
+        bq_soc = bq27220_soc;
+        bq_rm = (DESIGN_CAPACITY_MAH * bq27220_soc) / 100;
     } else {
         // BQ27220读取失败，使用电压法备用
-        customSOC = voltageToSOC(batteryVoltage);
-        remainingCapacityMah = (DESIGN_CAPACITY_MAH * customSOC) / 100;
+        bq_soc = voltageToSOC(batteryVoltage);
+        bq_rm = (DESIGN_CAPACITY_MAH * bq_soc) / 100;
     }
 
     // 边界处理
-    if (customSOC > 100) customSOC = 100;
-    if (customSOC < 0) customSOC = 0;
+    if (bq_soc > 100) bq_soc = 100;
+    if (bq_soc < 0) bq_soc = 0;
 
-    batterySOC = customSOC;
-    batteryRemainCap = remainingCapacityMah;
+    // 数据源切换：AI模式使用AI预测值
+    if (aiMode && aiModelReady && aiSOC >= 0) {
+        batterySOC = aiSOC;
+        batteryRemainCap = aiRemainCap;
+    } else {
+        batterySOC = bq_soc;
+        batteryRemainCap = bq_rm;
+    }
+
+    customSOC = bq_soc;            // 始终保留BQ27220值（日志对比用）
+    remainingCapacityMah = bq_rm;
     batteryFullCap = DESIGN_CAPACITY_MAH;
     batteryDesignCap = DESIGN_CAPACITY_MAH;
 }
@@ -304,6 +325,23 @@ void readBatteryData() {
 
     // 使用自定义SOC计算（SOC已在上面读取，避免重复I2C通信）
     int bq27220_soc = fuelGauge.readStateOfChargePercent();
+
+    // 更新AI特征缓冲区（始终执行，保持缓冲区热状态）
+    if (aiModelReady) {
+        ai_soc_update_buffer(batteryVoltage, batteryCurrent,
+                             batteryAvgCurrent, isnan(batteryTemp) ? 25.0f : batteryTemp);
+    }
+
+    // AI推理（仅在AI模式下执行）
+    if (aiMode && aiModelReady) {
+        int ai_soc_val, ai_rm_val;
+        if (ai_soc_predict(&ai_soc_val, &ai_rm_val)) {
+            aiSOC = ai_soc_val;
+            aiRemainCap = ai_rm_val;
+        }
+        // 推理失败时保留上次值
+    }
+
     calculateCustomSOC(bq27220_soc);
 
     // 其他数据仍从BQ27220读取
@@ -362,6 +400,17 @@ void readBatteryData() {
                   batteryVoltage, batteryCurrent, batterySOC, batteryRemainCap,
                   isnan(batteryTemp) ? "NAN" : String(batteryTemp, 1).c_str(),
                   currentState);
+}
+
+// ================= 紧急停止 =================
+void emergencyStop() {
+    Serial.println("紧急停止！");
+    currentState = STATE_STOP;
+    lastEvent = EVENT_MANUAL_STOP;
+    updatePhase(0);
+    applyPowerControl();
+    if (sd_card_ok) logToSDCard();
+    updateOLED();
 }
 
 // ================= 自动截止检测 =================
@@ -429,15 +478,8 @@ void clickKey1() {
 }
 
 void longPressKey1() {
-    Serial.println("Key1 长按触发 -> 紧急停止");
-    if (currentState != STATE_STOP) {
-        currentState = STATE_STOP;
-        lastEvent = EVENT_MANUAL_STOP;
-        updatePhase(0);  // 回到休息状态
-        applyPowerControl();
-        if (sd_card_ok) logToSDCard();
-        updateOLED();
-    }
+    Serial.println("Key1 长按触发 -> 记录时间戳");
+    key1LongPressTime = millis();
 }
 
 void clickKey2() {
@@ -454,15 +496,72 @@ void clickKey2() {
 }
 
 void longPressKey2() {
-    Serial.println("Key2 长按触发");
-    if (currentState == STATE_STOP) {
-        currentMode = (currentMode == MODE_CHARGE) ? MODE_DISCHARGE : MODE_CHARGE;
-        lastEvent = EVENT_MANUAL_MODE;
-        Serial.println("-> 模式已切换");
+    Serial.println("Key2 长按触发 -> 记录时间戳");
+    key2LongPressTime = millis();
+}
+
+// ================= 同时长按检测 =================
+void checkCombinedLongPress() {
+    unsigned long now = millis();
+    bool k1_held = button1.isLongPressed();
+    bool k2_held = button2.isLongPressed();
+
+    // 情况1：两个按钮都被长按 -> AI模式切换（需要模型已加载）
+    if (k1_held && k2_held && key1LongPressTime > 0 && key2LongPressTime > 0) {
+        Serial.println("Key1+Key2 同时长按");
+        if (aiModelReady) {
+            aiMode = !aiMode;
+            if (aiMode) {
+                Serial.println("-> 已切换到AI模式");
+            } else {
+                Serial.println("-> 已切换到原始模式");
+            }
+            lastEvent = EVENT_AI_MODE_TOGGLE;
+        } else {
+            Serial.println("-> AI模型未加载，无法切换");
+        }
         updateOLED();
-    } else {
-        Serial.println("-> 运行中，模式切换被锁定！");
+        // 清除时间戳防止重复触发
+        key1LongPressTime = 0;
+        key2LongPressTime = 0;
+        return;
     }
+
+    // 情况2：仅KEY1长按，超时无KEY2跟上 -> 原紧急停止
+    if (key1LongPressTime > 0 && !k2_held) {
+        if (now - key1LongPressTime >= COMBO_GRACE_MS) {
+            Serial.println("Key1 长按确认 -> 紧急停止");
+            if (currentState != STATE_STOP) {
+                currentState = STATE_STOP;
+                lastEvent = EVENT_MANUAL_STOP;
+                updatePhase(0);
+                applyPowerControl();
+                if (sd_card_ok) logToSDCard();
+                updateOLED();
+            }
+            key1LongPressTime = 0;
+        }
+    }
+
+    // 情况3：仅KEY2长按，超时无KEY1跟上 -> 原模式切换
+    if (key2LongPressTime > 0 && !k1_held) {
+        if (now - key2LongPressTime >= COMBO_GRACE_MS) {
+            Serial.println("Key2 长按确认 -> 模式切换");
+            if (currentState == STATE_STOP) {
+                currentMode = (currentMode == MODE_CHARGE) ? MODE_DISCHARGE : MODE_CHARGE;
+                lastEvent = EVENT_MANUAL_MODE;
+                Serial.println("-> 模式已切换");
+                updateOLED();
+            } else {
+                Serial.println("-> 运行中，模式切换被锁定！");
+            }
+            key2LongPressTime = 0;
+        }
+    }
+
+    // 情况4：按钮释放 -> 清除对应时间戳
+    if (!k1_held) key1LongPressTime = 0;
+    if (!k2_held) key2LongPressTime = 0;
 }
 
 // ================= 进度条绘制 =================
@@ -554,6 +653,16 @@ void setup() {
     // BLE初始化
     drawProgressBar(90, "BLE Init...");
     initBLE();
+
+    // AI模型加载
+    drawProgressBar(95, "AI Model Load...");
+    aiModelReady = ai_soc_init();
+    if (aiModelReady) {
+        Serial.println("AI SOC模型加载成功");
+    } else {
+        Serial.println("AI SOC模型加载失败，AI模式不可用");
+    }
+
     drawProgressBar(100, "Init Done");
 
     delay(500);
@@ -568,6 +677,7 @@ void loop() {
 
     button1.tick();
     button2.tick();
+    checkCombinedLongPress();
 
     blePollCommand();
 
@@ -576,6 +686,13 @@ void loop() {
         checkAutoCalibrate();  // 自动校准（在readBatteryData之前）
         readBatteryData();
         checkAutoCutoff();
+
+        // 安全检查：温度过高
+        if (!isnan(batteryTemp) && batteryTemp >= TEMP_CUTOFF_C) {
+            Serial.printf("温度过高 %.1f°C >= %.1f°C，紧急停止！\n", batteryTemp, TEMP_CUTOFF_C);
+            emergencyStop();
+            return;
+        }
     }
 
     {

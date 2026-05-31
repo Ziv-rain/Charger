@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include <OneButton.h>
 #include <BQ27220.h>
+#include "ai_soc.h"
 
 // ================= 引脚定义 =================
 const int PIN_KEY1 = 34;
@@ -55,6 +56,7 @@ enum WorkMode {
 #define EVENT_AUTO_CUTOFF_EMPTY  6
 #define EVENT_MANUAL_RESUME      7
 #define EVENT_MANUAL_PAUSE       8
+#define EVENT_AI_MODE_TOGGLE     9
 
 // ================= 全局状态变量 =================
 extern SystemState currentState;
@@ -127,16 +129,27 @@ extern unsigned long lastDvDtTime;
 extern float dvDt;
 extern float estimatedIR;
 
+// ================= AI SOC预测 =================
+extern bool aiMode;                    // true=AI预测模式, false=BQ27220原始模式
+extern bool aiModelReady;              // true=TFLite模型加载成功
+extern int aiSOC;                      // AI预测的SOC (0-100%)
+extern int aiRemainCap;                // AI预测的剩余容量 (mAh)
+
+// ================= 安全阈值 =================
+#define TEMP_CUTOFF_C 60.0f                // 温度过高阈值（°C）
+
 // ================= 函数声明 =================
 void applyPowerControl();
 void readBatteryData();
 void updateOLED();
 bool initSDCard();
 void logToSDCard();
+void emergencyStop();
 void clickKey1();
 void longPressKey1();
 void clickKey2();
 void longPressKey2();
+void checkCombinedLongPress();
 
 // BLE 通信
 void initBLE();

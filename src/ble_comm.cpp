@@ -2,6 +2,7 @@
 #include "main.h"
 #include "display.h"
 #include "sdcard.h"
+#include "ai_soc.h"
 
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -42,6 +43,7 @@ static uint8_t encodeStatus() {
         default: run = 0; break;
     }
     s |= (run & 0x03) << 2;
+    if (aiMode) s |= (1 << 4);  // bit4 = AI预测模式
     return s;
 }
 

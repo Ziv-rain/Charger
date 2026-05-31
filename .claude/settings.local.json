@@ -1,15 +1,35 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git *)",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:github.com)",
-      "Bash(where platformio *)",
-      "Bash(where pio *)",
-      "Bash(python -m platformio --version)",
-      "Bash(C:/Users/zouyuhao/.platformio/penv/Scripts/pio.exe run *)",
-      "mcp__ide__getDiagnostics",
-      "WebSearch"
+      "Bash(*)",
+      "Edit(*)",
+      "Write(*)",
+      "WebFetch(*)"
+    ],
+    "deny": [
+      "Bash(rm -rf / *)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf ~/ *)",
+      "Bash(format C:\\*)",
+      "Bash(diskpart clean *)",
+      "Bash(chmod 777 *)",
+      "Bash(chown root *)",
+      "Bash(nmap *)",
+      "Bash(sqlmap *)",
+      "Bash(drop database *)",
+      "Bash(drop table *)",
+      "Bash(rm /*)",
+      "Bash(mkfs *)",
+      "Bash(dd if=*)",
+      "Bash(shutdown *)",
+      "Bash(reboot *)",
+      "Bash(init 0)",
+      "Bash(init 6)",
+      "Bash(curl * | bash *)",
+      "Bash(curl * | sh *)",
+      "Bash(wget * | bash *)",
+      "Bash(wget * | sh *)"
     ]
   }
 }

@@ -1,14 +1,24 @@
 #include "display.h"
+#include "ai_soc.h"
 
 void updateOLED() {
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_wqy12_t_gb2312);
 
-    // 第1行：图标栏 + 剩余容量 (y=10, 黄色区域 0-15)
+    // 第1行：图标栏 + AI指示 + 剩余容量 (y=10, 黄色区域 0-15)
     u8g2.setCursor(0, 10);
     u8g2.print(sd_card_ok ? "SD" : "--");
     u8g2.setCursor(30, 10);
     u8g2.print(bleDeviceConnected ? "BLE" : "--");
+    // AI模式指示（反色显示）
+    if (aiMode) {
+        u8g2.setDrawColor(1);
+        u8g2.drawBox(54, 0, 22, 14);
+        u8g2.setDrawColor(0);
+        u8g2.setCursor(59, 11);
+        u8g2.print("AI");
+        u8g2.setDrawColor(1);
+    }
     u8g2.setCursor(78, 10);
     if (bq27220_ok && batteryRemainCap >= 0) {
         u8g2.print(String(batteryRemainCap) + "mAh");
@@ -21,16 +31,12 @@ void updateOLED() {
     String line2 = "";
     line2 += (currentMode == MODE_CHARGE) ? "充电模式 | " : "放电模式 | ";
     line2 += String((currentMode == MODE_CHARGE) ? chargeGear : dischargeGear) + "档 | ";
-    if (autoCalibrating) {
-        line2 += "校准中";
-    } else {
-        switch (currentState) {
-            case STATE_STOP:             line2 += "停止"; break;
-            case STATE_CHARGE_RUN:
-            case STATE_DISCHARGE_RUN:    line2 += "运行"; break;
-            case STATE_CHARGE_PAUSE:
-            case STATE_DISCHARGE_PAUSE:  line2 += "暂停"; break;
-        }
+    switch (currentState) {
+        case STATE_STOP:             line2 += "停止"; break;
+        case STATE_CHARGE_RUN:
+        case STATE_DISCHARGE_RUN:    line2 += "运行"; break;
+        case STATE_CHARGE_PAUSE:
+        case STATE_DISCHARGE_PAUSE:  line2 += "暂停"; break;
     }
     u8g2.print(line2.c_str());
 
