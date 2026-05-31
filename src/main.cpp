@@ -191,12 +191,24 @@ void checkAutoCalibrate() {
         return;
     }
 
-    // 根据快充/慢充模式调整校准间隔
-    // 快充模式（gear==2）：3分钟校准一次
-    // 慢充模式（gear==1）：10分钟校准一次
-    bool isFastCharge = (currentState == STATE_CHARGE_RUN && chargeGear == 2) ||
-                        (currentState == STATE_DISCHARGE_RUN && dischargeGear == 2);
-    unsigned long calibrateInterval = isFastCharge ? 180000 : AUTO_CALIBRATE_INTERVAL;  // 3分钟 : 10分钟
+    // 根据电压范围和充放电模式动态调整校准间隔
+    unsigned long calibrateInterval;
+    if (currentState == STATE_DISCHARGE_RUN) {
+        // 放电模式
+        if (batteryVoltage <= 3680) {
+            calibrateInterval = 180000;  // 3分钟（低电量区域）
+        } else {
+            // 4300mV - 3680mV
+            calibrateInterval = (dischargeGear == 1) ? 900000 : 600000;  // 1档15分钟，2档10分钟
+        }
+    } else {
+        // 充电模式
+        if (batteryVoltage <= 3920) {
+            calibrateInterval = 60000;   // 1分钟（低电量区域）
+        } else {
+            calibrateInterval = 600000;  // 10分钟（高电量区域）
+        }
+    }
 
     // 检查是否到达校准间隔
     if (now - lastAutoCalibrateTime < calibrateInterval) return;
