@@ -268,6 +268,17 @@ void blePollCommand() {
         }
         break;
 
+    case 0x07:  // AI/普通SOC模式切换
+        if (aiModelReady) {
+            aiMode = !aiMode;
+            lastEvent = EVENT_AI_MODE_TOGGLE;
+            Serial.print("BLE指令: ");
+            Serial.println(aiMode ? "切换到AI模式" : "切换到普通模式");
+        } else {
+            Serial.println("BLE指令: AI模型未加载，无法切换");
+        }
+        break;
+
     default:
         break;
     }

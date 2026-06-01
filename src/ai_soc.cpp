@@ -1,16 +1,16 @@
 #include "ai_soc.h"
-#include "soc_model_normal.h"
+#include "soc_model_normal.h"  // 需要替换为Dense模型
 
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 // ================= 配置 =================
-static constexpr int TENSOR_ARENA_SIZE = 40 * 1024;  // 40KB（减少内存压力）
+static constexpr int TENSOR_ARENA_SIZE = 32 * 1024;  // 32KB（Dense模型更小）
 static constexpr int LOOK_BACK = 10;
 static constexpr int N_FEATURES = 4;
 
-// Tensor Arena: 动态分配（避免静态初始化阶段OOM）
+// Tensor Arena: 动态分配
 static uint8_t* tensor_arena = nullptr;
 
 // TFLite对象
@@ -24,7 +24,7 @@ static float feature_buffer[LOOK_BACK][N_FEATURES];
 static int buffer_index = 0;
 static bool buffer_full = false;
 
-// ================= Scaler参数（从训练数据提取） =================
+// ================= Scaler参数 =================
 static const float FEAT_MIN[] = {2994.0f, -477.0f, -477.0f, 20.1f};
 static const float FEAT_MAX[] = {4157.0f, 1011.0f,  989.0f, 48.9f};
 static const float FEAT_RANGE[] = {
@@ -39,9 +39,8 @@ static const float TARG_MAX[] = {100.0f, 1500.0f};
 
 // ================= 初始化 =================
 bool ai_soc_init() {
-    Serial.println("AI SOC: 正在加载模型...");
+    Serial.println("AI SOC (Dense): 正在加载模型...");
 
-    // 动态分配tensor arena
     tensor_arena = (uint8_t*)malloc(TENSOR_ARENA_SIZE);
     if (!tensor_arena) {
         Serial.printf("AI SOC: 内存分配失败！需要%d字节\n", TENSOR_ARENA_SIZE);
@@ -57,29 +56,30 @@ bool ai_soc_init() {
         return false;
     }
 
-    // 注册算子（包括LSTM需要的WHILE和CALL_ONCE）
-    tflite::MicroMutableOpResolver<25>* resolver = new tflite::MicroMutableOpResolver<25>();
-    resolver->AddUnidirectionalSequenceLSTM();
+    // 注册算子 - Dense模型只需要基本算子，不需要WHILE
+    tflite::MicroMutableOpResolver<20>* resolver = new tflite::MicroMutableOpResolver<20>();
     resolver->AddFullyConnected();
     resolver->AddRelu();
-    resolver->AddMul();
-    resolver->AddAdd();
     resolver->AddReshape();
     resolver->AddLogistic();
     resolver->AddTanh();
-    resolver->AddVarHandle();
-    resolver->AddAssignVariable();
-    resolver->AddReadVariable();
-    resolver->AddWhile();        // LSTM需要
-    resolver->AddCallOnce();     // LSTM需要
+    resolver->AddMul();
+    resolver->AddAdd();
+    resolver->AddSub();
+    resolver->AddDiv();
+    resolver->AddMean();
+    resolver->AddStridedSlice();
+    resolver->AddConcatenation();
+    resolver->AddCast();
+    resolver->AddPack();
+    resolver->AddShape();
 
     interpreter = new tflite::MicroInterpreter(
         model, *resolver, tensor_arena, TENSOR_ARENA_SIZE);
 
     TfLiteStatus status = interpreter->AllocateTensors();
     if (status != kTfLiteOk) {
-        Serial.println("AI SOC: 张量分配失败！模型可能包含不支持的算子。");
-        // 安全清理
+        Serial.println("AI SOC: 张量分配失败！");
         interpreter = nullptr;
         free(tensor_arena);
         tensor_arena = nullptr;
@@ -90,7 +90,7 @@ bool ai_soc_init() {
     input_tensor = interpreter->input(0);
     output_tensor = interpreter->output(0);
 
-    Serial.printf("AI SOC: 模型加载成功!\n");
+    Serial.printf("AI SOC (Dense): 模型加载成功!\n");
     Serial.printf("  输入: [%d, %d, %d]\n",
                   input_tensor->dims->data[0],
                   input_tensor->dims->data[1],

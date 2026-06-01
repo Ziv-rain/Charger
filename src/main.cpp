@@ -396,7 +396,8 @@ void readBatteryData() {
     }
 
     // 周期性状态输出
-    Serial.printf("[SOC] V=%dmV I=%dmA SOC=%d%% RM=%dmAh T=%sC state=%d\n",
+    Serial.printf("[%s] V=%dmV I=%dmA SOC=%d%% RM=%dmAh T=%sC state=%d\n",
+                  (aiMode && aiModelReady) ? "AI" : "BQ",
                   batteryVoltage, batteryCurrent, batterySOC, batteryRemainCap,
                   isnan(batteryTemp) ? "NAN" : String(batteryTemp, 1).c_str(),
                   currentState);
@@ -726,7 +727,7 @@ void loop() {
         }
     }
 
-    if (!bq27220_ok && now - lastBQRecovery >= 10000) {
+    if (!bq27220_ok && now - lastBQRecovery >= 5000) {
         lastBQRecovery = now;
         bq27220_ok = fuelGauge.begin(Wire);
         if (bq27220_ok) {
