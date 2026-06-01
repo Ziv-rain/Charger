@@ -655,11 +655,11 @@ void setup() {
     drawProgressBar(90, "BLE Init...");
     initBLE();
 
-    // AI模型加载
-    drawProgressBar(95, "AI Model Load...");
+    // AI模型加载（纯C LSTM，无需TFLite）
+    drawProgressBar(95, "AI LSTM Init...");
     aiModelReady = ai_soc_init();
     if (aiModelReady) {
-        Serial.println("AI SOC模型加载成功");
+        Serial.println("AI SOC (LSTM纯C) 加载成功");
     } else {
         Serial.println("AI SOC模型加载失败，AI模式不可用");
     }

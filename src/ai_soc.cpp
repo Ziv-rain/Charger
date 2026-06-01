@@ -1,168 +1,207 @@
+/**
+ * 纯C LSTM推理引擎
+ * 替代TFLite Micro，零框架依赖
+ *
+ * 模型结构:
+ *   LSTM(32) -> LSTM(16) -> Dense(8,relu) -> Dense(2,linear)
+ *   输入: [10, 4] (look_back=10, features=voltage/current/avg_current/temp)
+ *   输出: [2] (SOC%, remaining_mAh)
+ */
+
 #include "ai_soc.h"
-#include "soc_model_normal.h"  // 需要替换为Dense模型
+#include "lstm_weights.h"
+#include <math.h>
+#include <string.h>
 
-#include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
-#include "tensorflow/lite/schema/schema_generated.h"
+// ================= 辅助函数 =================
 
-// ================= 配置 =================
-static constexpr int TENSOR_ARENA_SIZE = 32 * 1024;  // 32KB（Dense模型更小）
-static constexpr int LOOK_BACK = 10;
-static constexpr int N_FEATURES = 4;
+static inline float sigmoidf(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
 
-// Tensor Arena: 动态分配
-static uint8_t* tensor_arena = nullptr;
+/**
+ * 矩阵-向量乘法: out = W * x + b
+ * W: [rows x cols] (行优先), x: [cols], b: [rows], out: [rows]
+ */
+static void matvec_add(const float *W, const float *x, const float *b,
+                       float *out, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        float sum = b[i];
+        const float *Wrow = W + i * cols;
+        for (int j = 0; j < cols; j++) {
+            sum += Wrow[j] * x[j];
+        }
+        out[i] = sum;
+    }
+}
 
-// TFLite对象
-static const tflite::Model* model = nullptr;
-static tflite::MicroInterpreter* interpreter = nullptr;
-static TfLiteTensor* input_tensor = nullptr;
-static TfLiteTensor* output_tensor = nullptr;
+/**
+ * LSTM Cell单步计算
+ */
+static void lstm_cell(const float *x, const float *h_prev, const float *c_prev,
+                      float *h_out, float *c_out,
+                      const float *Wi, const float *Wf, const float *Wc, const float *Wo,
+                      const float *Ui, const float *Uf, const float *Uc, const float *Uo,
+                      const float *bi, const float *bf, const float *bc, const float *bo,
+                      int input_dim, int units,
+                      float *buf /* 至少 4*units */) {
+    float *gi = buf;
+    float *gf = buf + units;
+    float *gc = buf + 2 * units;
+    float *go = buf + 3 * units;
 
-// ================= 特征环形缓冲区 =================
+    // gi = sigmoid(Wi*x + Ui*h + bi)
+    matvec_add(Wi, x, bi, gi, units, input_dim);
+    for (int i = 0; i < units; i++) {
+        float sum = 0;
+        for (int j = 0; j < units; j++) sum += Ui[i * units + j] * h_prev[j];
+        gi[i] = sigmoidf(gi[i] + sum);
+    }
+
+    // gf = sigmoid(Wf*x + Uf*h + bf)
+    matvec_add(Wf, x, bf, gf, units, input_dim);
+    for (int i = 0; i < units; i++) {
+        float sum = 0;
+        for (int j = 0; j < units; j++) sum += Uf[i * units + j] * h_prev[j];
+        gf[i] = sigmoidf(gf[i] + sum);
+    }
+
+    // gc = tanh(Wc*x + Uc*h + bc)
+    matvec_add(Wc, x, bc, gc, units, input_dim);
+    for (int i = 0; i < units; i++) {
+        float sum = 0;
+        for (int j = 0; j < units; j++) sum += Uc[i * units + j] * h_prev[j];
+        gc[i] = tanhf(gc[i] + sum);
+    }
+
+    // go = sigmoid(Wo*x + Uo*h + bo)
+    matvec_add(Wo, x, bo, go, units, input_dim);
+    for (int i = 0; i < units; i++) {
+        float sum = 0;
+        for (int j = 0; j < units; j++) sum += Uo[i * units + j] * h_prev[j];
+        go[i] = sigmoidf(go[i] + sum);
+    }
+
+    // c = gf * c_prev + gi * gc
+    // h = go * tanh(c)
+    for (int i = 0; i < units; i++) {
+        c_out[i] = gf[i] * c_prev[i] + gi[i] * gc[i];
+        h_out[i] = go[i] * tanhf(c_out[i]);
+    }
+}
+
+/**
+ * Dense层: out = W*x + b, 可选ReLU
+ */
+static void dense_forward(const float *W, const float *x, const float *b,
+                          float *out, int in_dim, int out_dim, bool use_relu) {
+    for (int i = 0; i < out_dim; i++) {
+        float sum = b[i];
+        const float *Wrow = W + i * in_dim;
+        for (int j = 0; j < in_dim; j++) {
+            sum += Wrow[j] * x[j];
+        }
+        out[i] = use_relu ? fmaxf(0.0f, sum) : sum;
+    }
+}
+
+// ================= 全局状态 =================
+
 static float feature_buffer[LOOK_BACK][N_FEATURES];
 static int buffer_index = 0;
 static bool buffer_full = false;
 
-// ================= Scaler参数 =================
-static const float FEAT_MIN[] = {2994.0f, -477.0f, -477.0f, 20.1f};
-static const float FEAT_MAX[] = {4157.0f, 1011.0f,  989.0f, 48.9f};
-static const float FEAT_RANGE[] = {
-    FEAT_MAX[0] - FEAT_MIN[0],
-    FEAT_MAX[1] - FEAT_MIN[1],
-    FEAT_MAX[2] - FEAT_MIN[2],
-    FEAT_MAX[3] - FEAT_MIN[3]
-};
+// ================= 公共接口 =================
 
-static const float TARG_MIN[] = {0.0f,    0.0f};
-static const float TARG_MAX[] = {100.0f, 1500.0f};
-
-// ================= 初始化 =================
-bool ai_soc_init() {
-    Serial.println("AI SOC (Dense): 正在加载模型...");
-
-    tensor_arena = (uint8_t*)malloc(TENSOR_ARENA_SIZE);
-    if (!tensor_arena) {
-        Serial.printf("AI SOC: 内存分配失败！需要%d字节\n", TENSOR_ARENA_SIZE);
-        return false;
-    }
-    Serial.printf("AI SOC: 分配%d字节tensor arena OK\n", TENSOR_ARENA_SIZE);
-
-    model = tflite::GetModel(soc_model_data);
-    if (model->version() != TFLITE_SCHEMA_VERSION) {
-        Serial.printf("AI SOC: 模型版本不匹配!\n");
-        free(tensor_arena);
-        tensor_arena = nullptr;
-        return false;
-    }
-
-    // 注册算子 - Dense模型只需要基本算子，不需要WHILE
-    tflite::MicroMutableOpResolver<20>* resolver = new tflite::MicroMutableOpResolver<20>();
-    resolver->AddFullyConnected();
-    resolver->AddRelu();
-    resolver->AddReshape();
-    resolver->AddLogistic();
-    resolver->AddTanh();
-    resolver->AddMul();
-    resolver->AddAdd();
-    resolver->AddSub();
-    resolver->AddDiv();
-    resolver->AddMean();
-    resolver->AddStridedSlice();
-    resolver->AddConcatenation();
-    resolver->AddCast();
-    resolver->AddPack();
-    resolver->AddShape();
-
-    interpreter = new tflite::MicroInterpreter(
-        model, *resolver, tensor_arena, TENSOR_ARENA_SIZE);
-
-    TfLiteStatus status = interpreter->AllocateTensors();
-    if (status != kTfLiteOk) {
-        Serial.println("AI SOC: 张量分配失败！");
-        interpreter = nullptr;
-        free(tensor_arena);
-        tensor_arena = nullptr;
-        free(resolver);
-        return false;
-    }
-
-    input_tensor = interpreter->input(0);
-    output_tensor = interpreter->output(0);
-
-    Serial.printf("AI SOC (Dense): 模型加载成功!\n");
-    Serial.printf("  输入: [%d, %d, %d]\n",
-                  input_tensor->dims->data[0],
-                  input_tensor->dims->data[1],
-                  input_tensor->dims->data[2]);
-    Serial.printf("  输出: [%d, %d]\n",
-                  output_tensor->dims->data[0],
-                  output_tensor->dims->data[1]);
-    Serial.printf("  Arena: %d / %d bytes\n",
-                  interpreter->arena_used_bytes(), TENSOR_ARENA_SIZE);
-
+bool ai_soc_init(void) {
     buffer_index = 0;
     buffer_full = false;
     memset(feature_buffer, 0, sizeof(feature_buffer));
-
     return true;
 }
 
-// ================= 更新特征缓冲区 =================
 void ai_soc_update_buffer(int voltage_mV, int current_mA, int avg_current_mA, float temperature_C) {
-    float raw[N_FEATURES] = {
-        (float)voltage_mV,
-        (float)current_mA,
-        (float)avg_current_mA,
-        temperature_C
-    };
+    float x[N_FEATURES];
+    x[0] = ((float)voltage_mV - FEAT_MIN[0]) / FEAT_RANGE[0];
+    x[1] = ((float)current_mA - FEAT_MIN[1]) / FEAT_RANGE[1];
+    x[2] = ((float)avg_current_mA - FEAT_MIN[2]) / FEAT_RANGE[2];
+    x[3] = (temperature_C - FEAT_MIN[3]) / FEAT_RANGE[3];
 
     for (int i = 0; i < N_FEATURES; i++) {
-        float norm = (raw[i] - FEAT_MIN[i]) / FEAT_RANGE[i];
-        if (norm < 0.0f) norm = 0.0f;
-        if (norm > 1.0f) norm = 1.0f;
-        feature_buffer[buffer_index][i] = norm;
+        if (x[i] < 0.0f) x[i] = 0.0f;
+        if (x[i] > 1.0f) x[i] = 1.0f;
     }
 
-    buffer_index++;
-    if (buffer_index >= LOOK_BACK) {
-        buffer_index = 0;
-        buffer_full = true;
-    }
+    memcpy(feature_buffer[buffer_index], x, sizeof(float) * N_FEATURES);
+    buffer_index = (buffer_index + 1) % LOOK_BACK;
+    if (buffer_index == 0) buffer_full = true;
 }
 
-// ================= 执行推理 =================
-bool ai_soc_predict(int* soc_out, int* rm_out) {
-    if (!buffer_full || !interpreter || !input_tensor || !output_tensor) {
-        return false;
-    }
+bool ai_soc_predict(int *out_soc, int *out_rm) {
+    if (!buffer_full) return false;
 
-    // 填入输入张量
-    float* input_data = input_tensor->data.f;
+    // LSTM层1状态
+    static float h1[LSTM1_UNITS];
+    static float c1[LSTM1_UNITS];
+    memset(h1, 0, sizeof(h1));
+    memset(c1, 0, sizeof(c1));
+
+    // LSTM层2状态
+    static float h2[LSTM2_UNITS];
+    static float c2[LSTM2_UNITS];
+    memset(h2, 0, sizeof(h2));
+    memset(c2, 0, sizeof(c2));
+
+    // 通用缓冲区 (4*max_units = 4*32 = 128)
+    float buf[4 * LSTM1_UNITS];
+
+    // 逐时间步处理
     for (int t = 0; t < LOOK_BACK; t++) {
-        int src_idx = (buffer_index + t) % LOOK_BACK;
-        for (int f = 0; f < N_FEATURES; f++) {
-            input_data[t * N_FEATURES + f] = feature_buffer[src_idx][f];
-        }
+        int idx = (buffer_index + t) % LOOK_BACK;
+        const float *x = feature_buffer[idx];
+
+        // LSTM层1
+        float h1_new[LSTM1_UNITS], c1_new[LSTM1_UNITS];
+        lstm_cell(x, h1, c1, h1_new, c1_new,
+                  lstm1_Wi, lstm1_Wf, lstm1_Wc, lstm1_Wo,
+                  lstm1_Ui, lstm1_Uf, lstm1_Uc, lstm1_Uo,
+                  lstm1_bi, lstm1_bf, lstm1_bc, lstm1_bo,
+                  N_FEATURES, LSTM1_UNITS, buf);
+        memcpy(h1, h1_new, sizeof(h1));
+        memcpy(c1, c1_new, sizeof(c1));
+
+        // LSTM层2
+        float h2_new[LSTM2_UNITS], c2_new[LSTM2_UNITS];
+        lstm_cell(h1, h2, c2, h2_new, c2_new,
+                  lstm2_Wi, lstm2_Wf, lstm2_Wc, lstm2_Wo,
+                  lstm2_Ui, lstm2_Uf, lstm2_Uc, lstm2_Uo,
+                  lstm2_bi, lstm2_bf, lstm2_bc, lstm2_bo,
+                  LSTM1_UNITS, LSTM2_UNITS, buf);
+        memcpy(h2, h2_new, sizeof(h2));
+        memcpy(c2, c2_new, sizeof(c2));
     }
 
-    // 推理
-    TfLiteStatus status = interpreter->Invoke();
-    if (status != kTfLiteOk) {
-        Serial.println("AI SOC: 推理失败！");
-        return false;
-    }
+    // Dense层1 (ReLU)
+    float dense1_out[DENSE1_UNITS];
+    dense_forward(dense1_W, h2, dense1_b, dense1_out,
+                 LSTM2_UNITS, DENSE1_UNITS, true);
+
+    // Dense层2 (Linear, 输出层)
+    float output[N_OUTPUTS];
+    dense_forward(dense2_W, dense1_out, dense2_b, output,
+                 DENSE1_UNITS, N_OUTPUTS, false);
 
     // 反归一化
-    float* output_data = output_tensor->data.f;
-    float ai_soc_f = output_data[0] * (TARG_MAX[0] - TARG_MIN[0]) + TARG_MIN[0];
-    float ai_rm_f = output_data[1] * (TARG_MAX[1] - TARG_MIN[1]) + TARG_MIN[1];
+    float soc_f = output[0] * TARG_RANGE[0] + TARG_MIN[0];
+    float rm_f = output[1] * TARG_RANGE[1] + TARG_MIN[1];
 
-    ai_soc_f = constrain(ai_soc_f, 0.0f, 100.0f);
-    ai_rm_f = constrain(ai_rm_f, 0.0f, 1500.0f);
+    if (soc_f < 0.0f) soc_f = 0.0f;
+    if (soc_f > 100.0f) soc_f = 100.0f;
+    if (rm_f < 0.0f) rm_f = 0.0f;
+    if (rm_f > TARG_RANGE[1]) rm_f = TARG_RANGE[1];  // 裁剪到设计容量
 
-    *soc_out = (int)(ai_soc_f + 0.5f);
-    *rm_out = (int)(ai_rm_f + 0.5f);
+    *out_soc = (int)(soc_f + 0.5f);
+    *out_rm = (int)(rm_f + 0.5f);
 
     return true;
 }
