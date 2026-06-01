@@ -204,6 +204,7 @@ void calculateCustomSOC(int bq27220_soc) {
 
 // ================= 自动校准 =================
 void checkAutoCalibrate() {
+    if (aiMode) return;  // AI模式不需要校准
     unsigned long now = millis();
 
     // 仅在充放电运行状态触发

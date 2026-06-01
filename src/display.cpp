@@ -8,14 +8,14 @@ void updateOLED() {
     // 第1行：图标栏 + AI指示 + 剩余容量 (y=10, 黄色区域 0-15)
     u8g2.setCursor(0, 10);
     u8g2.print(sd_card_ok ? "SD" : "--");
-    u8g2.setCursor(30, 10);
+    u8g2.setCursor(22, 10);
     u8g2.print(bleDeviceConnected ? "BLE" : "--");
     // AI模式指示（反色显示）
     if (aiMode) {
         u8g2.setDrawColor(1);
-        u8g2.drawBox(54, 0, 22, 14);
+        u8g2.drawBox(48, 0, 22, 14);
         u8g2.setDrawColor(0);
-        u8g2.setCursor(59, 11);
+        u8g2.setCursor(53, 11);
         u8g2.print("AI");
         u8g2.setDrawColor(1);
     }
