@@ -4,7 +4,6 @@
 #include "ble_comm.h"
 
 // ================= 全局对象定义 =================
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_I2C_SCL, PIN_I2C_SDA);
 OneButton button1(PIN_KEY1, true, false);
 OneButton button2(PIN_KEY2, true, false);
 BQ27220 fuelGauge;
@@ -138,14 +137,14 @@ void resetBQ27220() {
     delay(3000);  // 等待重置完成，BQ27220需要时间重新学习
 
     // 重新初始化
-    bq27220_ok = fuelGauge.begin(Wire, 0x55, -1, -1, 100000);
+    bq27220_ok = fuelGauge.begin(Wire, 0x55, PIN_I2C_SDA, PIN_I2C_SCL, 100000);
     if (bq27220_ok) {
         Serial.println("BQ27220 软重置成功，重新初始化完成");
     } else {
         Serial.println("BQ27220 软重置失败，尝试重新检测...");
         // 尝试重新初始化
         delay(500);
-        bq27220_ok = fuelGauge.begin(Wire, 0x55, -1, -1, 100000);
+        bq27220_ok = fuelGauge.begin(Wire, 0x55, PIN_I2C_SDA, PIN_I2C_SCL, 100000);
         if (bq27220_ok) {
             Serial.println("BQ27220 重新检测成功");
         } else {
@@ -314,7 +313,7 @@ void readBatteryData() {
 
     bqFailCount = 0;
     batteryVoltage = mv;
-    batteryCurrent = ma;  // 瞬时电流（OLED显示用）
+    batteryCurrent = ma;  // 瞬时电流（屏幕显示用）
 
     float tempC = fuelGauge.readTemperatureCelsius();
     // 温度范围验证：-40°C到85°C（BQ27220工作范围）
@@ -423,8 +422,8 @@ void checkAutoCutoff() {
             lastEvent = EVENT_AUTO_CUTOFF_FULL;
             updatePhase(0);  // 回到休息状态
             applyPowerControl();
-            if (sd_card_ok) logToSDCard();
             updateOLED();
+            if (sd_card_ok) logToSDCard();
             Serial.printf("自动截止：充满 %dmV >= %dmV\n", batteryVoltage, bleChargeCutoff);
         }
     } else if (currentState == STATE_DISCHARGE_RUN) {
@@ -433,8 +432,8 @@ void checkAutoCutoff() {
             lastEvent = EVENT_AUTO_CUTOFF_EMPTY;
             updatePhase(0);  // 回到休息状态
             applyPowerControl();
-            if (sd_card_ok) logToSDCard();
             updateOLED();
+            if (sd_card_ok) logToSDCard();
             Serial.printf("自动截止：放空 %dmV <= %dmV\n", batteryVoltage, bleDischargeCutoff);
         }
     }
@@ -566,45 +565,15 @@ void checkCombinedLongPress() {
     if (!k2_held) key2LongPressTime = 0;
 }
 
-// ================= 进度条绘制 =================
-void drawProgressBar(int percent, const char* status) {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_7x13B_tf);
-
-    // 标题
-    u8g2.drawStr(24, 14, "INITIALIZING");
-
-    // 进度条背景
-    u8g2.drawFrame(10, 24, 108, 12);
-
-    // 进度条填充
-    int fillWidth = (percent * 104) / 100;
-    u8g2.drawBox(12, 26, fillWidth, 8);
-
-    // 百分比
-    char percentStr[8];
-    snprintf(percentStr, sizeof(percentStr), "%d%%", percent);
-    u8g2.drawStr(52, 48, percentStr);
-
-    // 状态文字
-    u8g2.drawStr(10, 62, status);
-
-    u8g2.sendBuffer();
-}
-
 // ================= Arduino 主程序 =================
 void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println("系统启动中...");
 
-    // OLED初始化（u8g2会自动初始化I2C总线）
-    u8g2.begin();
-    u8g2.enableUTF8Print();
-    drawProgressBar(10, "OLED Ready");
-
-    // I2C时钟配置
-    Wire.setClock(100000);  // 降低I2C速度到100kHz，提高稳定性
+    // 串口屏初始化（UART，不涉及I2C）
+    initScreen();
+    drawProgressBar(10, "Screen Ready");
 
     // GPIO初始化
     drawProgressBar(35, "GPIO Init...");
@@ -617,15 +586,26 @@ void setup() {
     digitalWrite(PIN_DISCHARGE_EN, LOW);
     digitalWrite(PIN_DISCHARGE_CURRENT, LOW);
 
-    // BQ27220初始化
-    drawProgressBar(50, "BQ27220 Detect...");
-    delay(1000);  // 增加等待时间
-    bq27220_ok = fuelGauge.begin(Wire, 0x55, -1, -1, 100000);  // 100kHz
+    // BQ27220初始化（注意：不要在之前调用 Wire.begin()，由库内部统一初始化）
+    drawProgressBar(55, "BQ27220 Detect...");
+    delay(1000);
+    bq27220_ok = fuelGauge.begin(Wire, 0x55, PIN_I2C_SDA, PIN_I2C_SCL, 100000);
     if (bq27220_ok) {
         Serial.println("BQ27220 检测成功");
         drawProgressBar(65, "BQ27220 Ready");
     } else {
         Serial.println("BQ27220 未检测到！");
+        // I2C 总线扫描，排查设备地址
+        Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+        Wire.setClock(100000);
+        Serial.print("I2C Scan: ");
+        for (uint8_t addr = 1; addr < 127; addr++) {
+            Wire.beginTransmission(addr);
+            if (Wire.endTransmission() == 0) {
+                Serial.printf("0x%02X ", addr);
+            }
+        }
+        Serial.println();
         drawProgressBar(65, "BQ27220 Failed");
     }
 
@@ -730,7 +710,7 @@ void loop() {
 
     if (!bq27220_ok && now - lastBQRecovery >= 5000) {
         lastBQRecovery = now;
-        bq27220_ok = fuelGauge.begin(Wire);
+        bq27220_ok = fuelGauge.begin(Wire, 0x55, PIN_I2C_SDA, PIN_I2C_SCL, 100000);
         if (bq27220_ok) {
             bqFailCount = 0;
             Serial.println("BQ27220 已恢复！");

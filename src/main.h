@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include <U8g2lib.h>
 #include <Wire.h>
 #include <OneButton.h>
 #include <BQ27220.h>
@@ -27,7 +26,6 @@ const int PIN_I2C_SDA = 21;
 const int PIN_I2C_SCL = 22;
 
 // ================= 全局对象 =================
-extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 extern OneButton button1;
 extern OneButton button2;
 extern BQ27220 fuelGauge;
