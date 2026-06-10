@@ -178,112 +178,148 @@ void drawProgressBar(int percent, const char* status) {
     screenDrawText16(16, 104, status, COLOR_LIGHT_GRAY);
 }
 
-// ================= 更新显示（完整 UI） =================
+// ================= 更新显示（仅刷新变化的数据） =================
 void updateOLED() {
-    // 首次调用清屏（清除初始页面的残留元素）
-    static bool firstFrame = true;
-    if (firstFrame) {
+    // 状态追踪（记录上一次的值，只更新变化的部分）
+    static int  prevSoc = -999;
+    static float prevTemp = NAN;
+    static int  prevVolt = -999;
+    static int  prevCurr = -999;
+    static int  prevCap = -999;
+    static uint8_t prevEvent = 255;
+    static bool prevSdOk = false;
+    static bool prevBleOk = false;
+    static bool prevAiMode = false;
+    static int  prevMode = -1;
+    static int  prevGear = -1;
+    static uint8_t prevState = 255;
+    static bool inited = false;
+
+    // 首次：清屏并画固定元素
+    if (!inited) {
         screenClear(COLOR_BLACK);
-        firstFrame = false;
+        screenDrawLine(0, 18, 127, 18, COLOR_LIGHT_GRAY);  // 状态栏分隔线
+        screenDrawLine(0, 38, 127, 38, COLOR_LIGHT_GRAY);  // 状态行分隔线
+        screenDrawLine(64, 40, 64, 127, COLOR_LIGHT_GRAY); // 田字格竖
+        screenDrawLine(0, 83, 127, 83, COLOR_LIGHT_GRAY);  // 田字格横
+        // 标签（只画一次）
+        screenDrawText16(20, 46, "SOC", COLOR_WHITE);
+        screenDrawText16(80, 46, STR_LABEL_TEMP, COLOR_WHITE);
+        screenDrawText16(16, 88, STR_LABEL_VOLT, COLOR_WHITE);
+        screenDrawText16(80, 88, STR_LABEL_CURR, COLOR_WHITE);
+        inited = true;
     }
 
-    // === 第1行 y=0~16：SD + BLE + AI + 容量（紧凑排列） ===
-    eraseArea(0, 0, 18, 16);
-    screenDrawText16(0, 0, sd_card_ok ? "SD" : "--", sd_card_ok ? COLOR_GREEN : COLOR_DARK_GRAY);
+    // --- 第1行：SD / BLE / AI / 容量 ---
 
-    eraseArea(20, 0, 24, 16);
-    screenDrawText16(20, 0, bleDeviceConnected ? "BLE" : "--", bleDeviceConnected ? COLOR_BLUE : COLOR_DARK_GRAY);
-
-    // AI 模式指示（黄色框居中）
-    eraseArea(46, 0, 24, 18);
-    if (aiMode) {
-        screenDrawBoxFilled(46, 0, 68, 16, COLOR_YELLOW);
-        screenDrawText16(51, 0, "AI", COLOR_BLACK);  // 居中于 46~68
+    if (sd_card_ok != prevSdOk) {
+        eraseArea(0, 0, 18, 16);
+        screenDrawText16(0, 0, sd_card_ok ? "SD" : "--", sd_card_ok ? COLOR_GREEN : COLOR_DARK_GRAY);
+        prevSdOk = sd_card_ok;
     }
 
-    // 剩余容量（预留右侧足够空间）
-    eraseArea(72, 0, 56, 16);
-    if (lastEvent == EVENT_AUTO_CUTOFF_FULL) {
-        screenDrawText16(72, 0, "FULL", COLOR_GREEN);
-    } else if (lastEvent == EVENT_AUTO_CUTOFF_EMPTY) {
-        screenDrawText16(72, 0, "LOW", COLOR_RED);
-    } else if (bq27220_ok && batteryRemainCap >= 0) {
-        char capStr[16];
-        snprintf(capStr, sizeof(capStr), "%dmAh", batteryRemainCap);
-        screenDrawText16(72, 0, capStr, COLOR_WHITE);
-    } else {
-        screenDrawText16(72, 0, "---mAh", COLOR_DARK_GRAY);
+    if (bleDeviceConnected != prevBleOk) {
+        eraseArea(20, 0, 24, 16);
+        screenDrawText16(20, 0, bleDeviceConnected ? "BLE" : "--", bleDeviceConnected ? COLOR_BLUE : COLOR_DARK_GRAY);
+        prevBleOk = bleDeviceConnected;
     }
 
-    // 分隔线
-    screenDrawLine(0, 18, 127, 18, COLOR_LIGHT_GRAY);
-
-    // === 第2行 y=22~36：模式左对齐  档位居中  状态右对齐 ===
-    eraseArea(0, 22, 128, 16);
-    const char* modeStr = (currentMode == MODE_CHARGE) ? STR_CHARGE : STR_DISCHARGE;
-    int gear = (currentMode == MODE_CHARGE) ? chargeGear : dischargeGear;
-    const char* stateStr;
-    switch (currentState) {
-        case STATE_STOP:             stateStr = STR_STOP; break;
-        case STATE_CHARGE_RUN:
-        case STATE_DISCHARGE_RUN:    stateStr = STR_RUN;  break;
-        case STATE_CHARGE_PAUSE:
-        case STATE_DISCHARGE_PAUSE:  stateStr = STR_PAUSE; break;
-        default:                     stateStr = STR_STOP; break;
-    }
-    // 模式左对齐
-    screenDrawText16(0, 22, modeStr, COLOR_WHITE);
-    // 档位居中
-    char gearStr[8];
-    snprintf(gearStr, sizeof(gearStr), "%d%s", gear, STR_GEAR);
-    screenDrawText16(52, 22, gearStr, COLOR_WHITE);
-    // 状态右对齐
-    screenDrawText16(96, 22, stateStr, COLOR_WHITE);
-
-    // 分隔线
-    screenDrawLine(0, 38, 127, 38, COLOR_LIGHT_GRAY);
-
-    // === 2x2 田字格（y=40~127） ===
-    screenDrawLine(64, 40, 64, 127, COLOR_LIGHT_GRAY);
-    screenDrawLine(0, 83, 127, 83, COLOR_LIGHT_GRAY);
-
-    // 左上：SOC（居中于 0~63）
-    screenDrawText16(20, 46, "SOC", COLOR_WHITE);
-    eraseArea(4, 64, 56, 16);
-    if (batterySOC >= 0) {
-        char val[16];
-        int w = snprintf(val, sizeof(val), "%d%%", batterySOC);
-        screenDrawText16(32 - w * 4, 64, val, COLOR_WHITE);
-    } else {
-        screenDrawText16(20, 64, "--%", COLOR_DARK_GRAY);
+    if (aiMode != prevAiMode) {
+        eraseArea(46, 0, 24, 18);
+        if (aiMode) {
+            screenDrawBoxFilled(46, 0, 68, 16, COLOR_YELLOW);
+            screenDrawText16(51, 0, "AI", COLOR_BLACK);
+        }
+        prevAiMode = aiMode;
     }
 
-    // 右上：温度（居中于 64~127）
-    screenDrawText16(80, 46, STR_LABEL_TEMP, COLOR_WHITE);
-    eraseArea(68, 64, 58, 16);
-    if (bq27220_ok && !isnan(batteryTemp)) {
-        char val[16];
-        int w = snprintf(val, sizeof(val), "%.1fC", batteryTemp);
-        screenDrawText16(96 - w * 4, 64, val, COLOR_WHITE);
-    } else {
-        screenDrawText16(76, 64, "--.-C", COLOR_DARK_GRAY);
+    if (batteryRemainCap != prevCap || lastEvent != prevEvent) {
+        eraseArea(72, 0, 56, 16);
+        if (lastEvent == EVENT_AUTO_CUTOFF_FULL) {
+            screenDrawText16(72, 0, "FULL", COLOR_GREEN);
+        } else if (lastEvent == EVENT_AUTO_CUTOFF_EMPTY) {
+            screenDrawText16(72, 0, "LOW", COLOR_RED);
+        } else if (bq27220_ok && batteryRemainCap >= 0) {
+            char capStr[16];
+            snprintf(capStr, sizeof(capStr), "%dmAh", batteryRemainCap);
+            screenDrawText16(72, 0, capStr, COLOR_WHITE);
+        } else {
+            screenDrawText16(72, 0, "---mAh", COLOR_DARK_GRAY);
+        }
+        prevCap = batteryRemainCap;
+        prevEvent = lastEvent;
     }
 
-    // 左下：电压（居中于 0~63）
-    screenDrawText16(16, 88, STR_LABEL_VOLT, COLOR_WHITE);
-    eraseArea(4, 106, 56, 16);
-    if (batteryVoltage >= 0) {
-        char val[16];
-        int w = snprintf(val, sizeof(val), "%.2fV", batteryVoltage / 1000.0);
-        screenDrawText16(32 - w * 4, 106, val, COLOR_WHITE);
-    } else {
-        screenDrawText16(12, 106, "--.--V", COLOR_DARK_GRAY);
+    // --- 第2行：模式/档位/状态 ---
+
+    int curMode = currentMode;
+    int curGear = (currentMode == MODE_CHARGE) ? chargeGear : dischargeGear;
+    uint8_t curState = (uint8_t)currentState;
+
+    if (curMode != prevMode || curGear != prevGear || curState != prevState) {
+        eraseArea(0, 22, 128, 16);
+        const char* modeStr = (curMode == MODE_CHARGE) ? STR_CHARGE : STR_DISCHARGE;
+        const char* stateStr;
+        switch (curState) {
+            case STATE_STOP:             stateStr = STR_STOP; break;
+            case STATE_CHARGE_RUN:
+            case STATE_DISCHARGE_RUN:    stateStr = STR_RUN;  break;
+            case STATE_CHARGE_PAUSE:
+            case STATE_DISCHARGE_PAUSE:  stateStr = STR_PAUSE; break;
+            default:                     stateStr = STR_STOP; break;
+        }
+        screenDrawText16(0, 22, modeStr, COLOR_WHITE);
+        char gearStr[8];
+        snprintf(gearStr, sizeof(gearStr), "%d%s", curGear, STR_GEAR);
+        screenDrawText16(52, 22, gearStr, COLOR_WHITE);
+        screenDrawText16(96, 22, stateStr, COLOR_WHITE);
+        prevMode = curMode;
+        prevGear = curGear;
+        prevState = curState;
     }
 
-    // 右下：电流（居中于 64~127）
-    screenDrawText16(80, 88, STR_LABEL_CURR, COLOR_WHITE);
-    eraseArea(68, 106, 60, 16);
-    {
+    // --- 田字格数据：只刷新变化的值 ---
+
+    if (batterySOC != prevSoc) {
+        eraseArea(4, 64, 56, 16);
+        if (batterySOC >= 0) {
+            char val[16];
+            int w = snprintf(val, sizeof(val), "%d%%", batterySOC);
+            screenDrawText16(32 - w * 4, 64, val, COLOR_WHITE);
+        } else {
+            screenDrawText16(20, 64, "--%", COLOR_DARK_GRAY);
+        }
+        prevSoc = batterySOC;
+    }
+
+    float curTemp = batteryTemp;
+    if ((!isnan(curTemp) && fabsf(curTemp - prevTemp) >= 0.1f) ||
+        (isnan(curTemp) != isnan(prevTemp))) {
+        eraseArea(68, 64, 58, 16);
+        if (bq27220_ok && !isnan(curTemp)) {
+            char val[16];
+            int w = snprintf(val, sizeof(val), "%.1fC", curTemp);
+            screenDrawText16(96 - w * 4, 64, val, COLOR_WHITE);
+        } else {
+            screenDrawText16(76, 64, "--.-C", COLOR_DARK_GRAY);
+        }
+        prevTemp = curTemp;
+    }
+
+    if (batteryVoltage != prevVolt) {
+        eraseArea(4, 106, 56, 16);
+        if (batteryVoltage >= 0) {
+            char val[16];
+            int w = snprintf(val, sizeof(val), "%.2fV", batteryVoltage / 1000.0);
+            screenDrawText16(32 - w * 4, 106, val, COLOR_WHITE);
+        } else {
+            screenDrawText16(12, 106, "--.--V", COLOR_DARK_GRAY);
+        }
+        prevVolt = batteryVoltage;
+    }
+
+    if (batteryCurrent != prevCurr) {
+        eraseArea(68, 106, 60, 16);
         char val[16];
         int w;
         if (batteryCurrent == 0) {
@@ -293,5 +329,6 @@ void updateOLED() {
             w = snprintf(val, sizeof(val), "%+dmA", batteryCurrent);
         }
         screenDrawText16(96 - w * 4, 106, val, COLOR_WHITE);
+        prevCurr = batteryCurrent;
     }
 }
