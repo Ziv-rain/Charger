@@ -20,7 +20,7 @@ static BLECharacteristic *pTxChar = nullptr;
 bool bleDeviceConnected = false;
 
 // ================= 截止电压变量 =================
-uint16_t bleChargeCutoff = 4200;
+uint16_t bleChargeCutoff = 4190;
 uint16_t bleDischargeCutoff = 3000;
 
 // ================= 指令缓存（BLE回调只写，主loop读） =================

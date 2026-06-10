@@ -29,3 +29,20 @@ const char STR_LOAD_AI[]     = "\xBC\xD3\xD4\xD8 AI\xC4\xA3\xD0\xCD";
 const char STR_INIT_DONE[]   = "\xB3\xF5\xCA\xBC\xBB\xAF\xCD\xEA\xB3\xC9";
 // 初始化中
 const char STR_INIT_ING[]    = "\xB3\xF5\xCA\xBC\xBB\xAF\xD6\xD0";
+// 电量（SOC 标签）
+const char STR_LABEL_SOC[]   = "\xB5\xE7\xC1\xBF";
+// 温度
+const char STR_LABEL_TEMP[]  = "\xCE\xC2\xB6\xC8";
+// 电压
+const char STR_LABEL_VOLT[]  = "\xB5\xE7\xD1\xB9";
+// 电流
+const char STR_LABEL_CURR[]  = "\xB5\xE7\xC1\xF7";
+// 充电 / 放电
+const char STR_CHARGE[]      = "\xB3\xE4\xB5\xE7";
+const char STR_DISCHARGE[]   = "\xB7\xC5\xB5\xE7";
+// 档
+const char STR_GEAR[]        = "\xB5\xB5";
+// 运行 / 暂停 / 停止
+const char STR_RUN[]         = "\xD4\xCB\xD0\xD0";
+const char STR_PAUSE[]       = "\xD4\xDD\xCD\xA3";
+const char STR_STOP[]        = "\xCD\xA3\xD6\xB9";

@@ -139,7 +139,6 @@ void logToSDCard() {
         logFile.print((millis() - phaseStartTime) / 1000);
         logFile.println(",-1,-1,-1,-1,-1,-1,-1");
     }
-    lastEvent = EVENT_NONE;
     logFile.flush();  // 显式刷新，防止断电数据丢失
     logFile.close();
 }

@@ -1,5 +1,6 @@
 #include "main.h"
 #include "display.h"
+#include "display_strings.h"
 #include "sdcard.h"
 #include "ble_comm.h"
 
@@ -573,10 +574,10 @@ void setup() {
 
     // 串口屏初始化（UART，不涉及I2C）
     initScreen();
-    drawProgressBar(10, "Screen Ready");
+    drawProgressBar(10, STR_READY);
 
     // GPIO初始化
-    drawProgressBar(35, "GPIO Init...");
+    drawProgressBar(35, STR_INIT_GPIO);
     pinMode(PIN_CHARGE_EN, OUTPUT);
     pinMode(PIN_CHARGE_CURRENT, OUTPUT);
     pinMode(PIN_DISCHARGE_EN, OUTPUT);
@@ -587,15 +588,14 @@ void setup() {
     digitalWrite(PIN_DISCHARGE_CURRENT, LOW);
 
     // BQ27220初始化（注意：不要在之前调用 Wire.begin()，由库内部统一初始化）
-    drawProgressBar(55, "BQ27220 Detect...");
+    drawProgressBar(55, STR_DETECT_BQ);
     delay(1000);
     bq27220_ok = fuelGauge.begin(Wire, 0x55, PIN_I2C_SDA, PIN_I2C_SCL, 100000);
     if (bq27220_ok) {
         Serial.println("BQ27220 检测成功");
-        drawProgressBar(65, "BQ27220 Ready");
+        drawProgressBar(65, STR_BQ_READY);
     } else {
         Serial.println("BQ27220 未检测到！");
-        // I2C 总线扫描，排查设备地址
         Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
         Wire.setClock(100000);
         Serial.print("I2C Scan: ");
@@ -606,22 +606,22 @@ void setup() {
             }
         }
         Serial.println();
-        drawProgressBar(65, "BQ27220 Failed");
+        drawProgressBar(65, STR_BQ_FAIL);
     }
 
     // SD卡初始化
-    drawProgressBar(75, "SD Card Detect...");
+    drawProgressBar(75, STR_DETECT_SD);
     pinMode(PIN_SD_DET, INPUT_PULLUP);
     if (digitalRead(PIN_SD_DET) == LOW) {
         sd_card_ok = initSDCard();
         if (sd_card_ok) {
-            drawProgressBar(85, "SD Card Ready");
+            drawProgressBar(85, STR_SD_READY);
         } else {
-            drawProgressBar(85, "SD Card Failed");
+            drawProgressBar(85, STR_SD_FAIL);
         }
     } else {
         Serial.println("SD卡未插入");
-        drawProgressBar(85, "No SD Card");
+        drawProgressBar(85, STR_NO_SD);
     }
 
     // 按钮初始化
@@ -633,11 +633,11 @@ void setup() {
     button2.attachLongPressStart(longPressKey2);
 
     // BLE初始化
-    drawProgressBar(90, "BLE Init...");
+    drawProgressBar(90, STR_INIT_BLE);
     initBLE();
 
-    // AI模型加载（纯C LSTM，无需TFLite）
-    drawProgressBar(95, "AI LSTM Init...");
+    // AI模型加载
+    drawProgressBar(95, STR_LOAD_AI);
     aiModelReady = ai_soc_init();
     if (aiModelReady) {
         Serial.println("AI SOC (LSTM纯C) 加载成功");
@@ -645,7 +645,7 @@ void setup() {
         Serial.println("AI SOC模型加载失败，AI模式不可用");
     }
 
-    drawProgressBar(100, "Init Done");
+    drawProgressBar(100, STR_INIT_DONE);
 
     delay(500);
     lastDisplayUpdate = millis();
