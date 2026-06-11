@@ -236,9 +236,9 @@ void updateOLED() {
     if (batteryRemainCap != prevCap || lastEvent != prevEvent) {
         eraseArea(72, 0, 56, 16);
         if (lastEvent == EVENT_AUTO_CUTOFF_FULL) {
-            screenDrawText16(72, 0, "FULL", COLOR_GREEN);
+            screenDrawText16(72, 0, STR_FULL, COLOR_GREEN);
         } else if (lastEvent == EVENT_AUTO_CUTOFF_EMPTY) {
-            screenDrawText16(72, 0, "LOW", COLOR_RED);
+            screenDrawText16(72, 0, STR_LOW_BATTERY, COLOR_RED);
         } else if (bq27220_ok && batteryRemainCap >= 0) {
             char capStr[16];
             snprintf(capStr, sizeof(capStr), "%dmAh", batteryRemainCap);

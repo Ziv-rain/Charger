@@ -46,3 +46,6 @@ const char STR_GEAR[]        = "\xB5\xB5";
 const char STR_RUN[]         = "\xD4\xCB\xD0\xD0";
 const char STR_PAUSE[]       = "\xD4\xDD\xCD\xA3";
 const char STR_STOP[]        = "\xCD\xA3\xD6\xB9";
+// 充满 / 电量不足
+const char STR_FULL[]        = "\xB3\xE4\xC2\xFA";
+const char STR_LOW_BATTERY[] = "\xB5\xE7\xC1\xBF\xB2\xBB\xD7\xE3";
