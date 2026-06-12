@@ -77,6 +77,13 @@ void screenSetBgColor(uint8_t color) {
     screenSendCommand(buf);
 }
 
+// ================= 绘制 12x12 文字 =================
+void screenDrawText12(int x, int y, const char* text, uint8_t color) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "DC12(%d,%d,'%s',%d)", x, y, text, color);
+    screenSendCommand(buf);
+}
+
 // ================= 绘制 16x16 文字 =================
 void screenDrawText16(int x, int y, const char* text, uint8_t color) {
     char buf[128];
@@ -238,7 +245,7 @@ void updateOLED() {
         if (lastEvent == EVENT_AUTO_CUTOFF_FULL) {
             screenDrawText16(72, 0, STR_FULL, COLOR_GREEN);
         } else if (lastEvent == EVENT_AUTO_CUTOFF_EMPTY) {
-            screenDrawText16(72, 0, STR_LOW_BATTERY, COLOR_RED);
+            screenDrawText12(72, 2, STR_LOW_BATTERY, COLOR_RED);
         } else if (bq27220_ok && batteryRemainCap >= 0) {
             char capStr[16];
             snprintf(capStr, sizeof(capStr), "%dmAh", batteryRemainCap);

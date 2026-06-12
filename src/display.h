@@ -29,6 +29,7 @@ void initScreen();
 void screenClear(uint8_t color = COLOR_BLACK);
 void screenSetBacklight(uint8_t level);  // 0=最亮, 255=最暗
 void screenSetDirection(uint8_t dir);    // 0-3
+void screenDrawText12(int x, int y, const char* text, uint8_t color);
 void screenDrawText16(int x, int y, const char* text, uint8_t color);
 void screenDrawText24(int x, int y, const char* text, uint8_t color);
 void screenDrawText32(int x, int y, const char* text, uint8_t color);
